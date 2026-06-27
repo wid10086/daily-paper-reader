@@ -1802,6 +1802,15 @@ window.$docsify = {
 
       const collectPaperHrefsFromSidebar = () => {
         try {
+          if (
+            window.DPRSidebar &&
+            typeof window.DPRSidebar.getPaperHrefs === 'function'
+          ) {
+            const fromApi = window.DPRSidebar.getPaperHrefs();
+            if (Array.isArray(fromApi) && fromApi.length) {
+              return fromApi.map(normalizeHref).filter(Boolean);
+            }
+          }
           const root = document.querySelector('#dpr-sidebar-v2');
           if (!root) return [];
           const sel = '#dpr-sidebar-v2 .dpr-sidebar-paper > a[href^="#/"]';
@@ -1816,6 +1825,15 @@ window.$docsify = {
 
       const collectReportHrefsFromSidebar = () => {
         try {
+          if (
+            window.DPRSidebar &&
+            typeof window.DPRSidebar.getReportHrefs === 'function'
+          ) {
+            const fromApi = window.DPRSidebar.getReportHrefs();
+            if (Array.isArray(fromApi) && fromApi.length) {
+              return fromApi.map(normalizeHref).filter(Boolean);
+            }
+          }
           const root = document.querySelector('#dpr-sidebar-v2');
           if (!root) return [];
           const sel = '#dpr-sidebar-v2 .dpr-sidebar-report-link';
@@ -1826,6 +1844,71 @@ window.$docsify = {
           });
           return out;
         } catch (e) { return []; }
+      };
+
+      const dedupeHrefs = (hrefs) => {
+        const seen = new Set();
+        const out = [];
+        (hrefs || []).forEach((href) => {
+          const h = normalizeHref(href);
+          if (!h || seen.has(h)) return;
+          seen.add(h);
+          out.push(h);
+        });
+        return out;
+      };
+
+      const routeHrefFromLocation = () => {
+        const raw = String((window.location && window.location.hash) || '');
+        if (!raw) return '#/';
+        return normalizeHref(raw.split('?')[0]);
+      };
+
+      const updateNavState = () => {
+        const paperHrefs = dedupeHrefs(collectPaperHrefsFromSidebar());
+        const reportHrefs = dedupeHrefs(collectReportHrefsFromSidebar());
+        const routeHref = routeHrefFromLocation();
+
+        DPR_NAV_STATE.paperHrefs = paperHrefs;
+        DPR_NAV_STATE.reportHrefs = reportHrefs;
+
+        let currentHref = '';
+        let currentReportHref = '';
+        try {
+          if (
+            window.DPRSidebar &&
+            typeof window.DPRSidebar.getCurrentPaperHref === 'function'
+          ) {
+            currentHref = normalizeHref(window.DPRSidebar.getCurrentPaperHref());
+          }
+          if (
+            window.DPRSidebar &&
+            typeof window.DPRSidebar.getCurrentReportHref === 'function'
+          ) {
+            currentReportHref = normalizeHref(window.DPRSidebar.getCurrentReportHref());
+          }
+        } catch {
+          currentHref = '';
+          currentReportHref = '';
+        }
+
+        if (!currentHref && paperHrefs.includes(routeHref)) {
+          currentHref = routeHref;
+        }
+        if (!currentReportHref && reportHrefs.includes(routeHref)) {
+          currentReportHref = routeHref;
+        }
+
+        DPR_NAV_STATE.currentHref = currentHref;
+        DPR_NAV_STATE.currentReportHref = currentReportHref;
+
+        try {
+          if (window.DPRSidebar && typeof window.DPRSidebar.syncActive === 'function') {
+            window.DPRSidebar.syncActive();
+          }
+        } catch {
+          // ignore
+        }
       };
 
       const centerSidebarOnHref = () => {};
@@ -1854,17 +1937,19 @@ window.$docsify = {
         const current = DPR_NAV_STATE.currentHref;
         const currentReport = DPR_NAV_STATE.currentReportHref;
         const isHome = !current && !currentReport;
-        const reportMode = isHome || !!currentReport;
+        const reportMode = !!currentReport;
         const list = reportMode ? reportList : paperList;
-        if (!list.length) return;
 
         // 首页：右键/左滑（delta=+1）跳到最新一天第一篇
         if (isHome) {
+          const firstTarget = paperList[0] || reportList[0];
           if (delta > 0) {
-            triggerPageNav(list[0], 'forward');
+            triggerPageNav(firstTarget, 'forward');
           }
           return;
         }
+
+        if (!list.length) return;
 
         const anchor = reportMode ? currentReport : current;
         const idx = list.indexOf(anchor);
@@ -2032,6 +2117,14 @@ window.$docsify = {
         if (window.__dprNavBound) return;
         window.__dprNavBound = true;
 
+        document.addEventListener('dpr-sidebar-updated', () => {
+          updateNavState();
+          prefetchAdjacent();
+        });
+        window.addEventListener('hashchange', () => {
+          updateNavState();
+        });
+
         // 禁用 Docsify 原生的标题锚点点击功能
         document.addEventListener('click', (e) => {
           try {
@@ -2066,17 +2159,15 @@ window.$docsify = {
           const cur = state[paperId];
           // 空格：在 good 与 read 之间切换
           if (cur === 'good') {
-            state[paperId] = 'read';
+            markPaperRead(paperId, 'read');
           } else {
-            state[paperId] = 'good';
+            markPaperRead(paperId, 'good');
           }
-	          saveReadState(state);
-	          markSidebarReadState(null);
-	          // 同步选中高亮层颜色（good <-> read 切换时避免残留绿色底）
-	          requestAnimationFrame(() => {
-	            syncSidebarActiveIndicator({ animate: false });
-	          });
-	        };
+          // 同步选中高亮层颜色（good <-> read 切换时避免残留绿色底）
+          requestAnimationFrame(() => {
+            syncSidebarActiveIndicator({ animate: false });
+          });
+        };
 
         // 通用书签切换函数：数字键 1234 对应 绿蓝紫红
         const toggleBookmarkForCurrent = (bookmarkType) => {
@@ -2090,12 +2181,10 @@ window.$docsify = {
           const cur = state[paperId];
           // 切换：如果当前已是该状态则取消（变为 read），否则设置为该状态
           if (cur === bookmarkType) {
-            state[paperId] = 'read';
+            markPaperRead(paperId, 'read');
           } else {
-            state[paperId] = bookmarkType;
+            markPaperRead(paperId, bookmarkType);
           }
-          saveReadState(state);
-          markSidebarReadState(null);
           requestAnimationFrame(() => {
             syncSidebarActiveIndicator({ animate: false });
           });

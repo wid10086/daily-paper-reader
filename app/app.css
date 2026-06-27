@@ -6734,15 +6734,25 @@ body.dpr-sidebar-v2 .sidebar,
 body.dpr-sidebar-v2 .sidebar-toggle {
   display: none !important;
 }
+body.dpr-sidebar-v2 #sidebar-resizer {
+  display: none !important;
+}
+/* 覆盖 docsify vue.css 的 `.content{position:absolute;top:0;right:0;bottom:0;left:300px}`
+   以及旧版 sidebar 调宽器通过内联 style 持久化的 `margin-left:350px` */
 body.dpr-sidebar-v2 .content {
-  left: 280px;
-  width: calc(100% - 280px);
-  position: relative;
+  position: absolute !important;
+  top: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  left: 280px !important;
+  margin: 0 !important;
+  width: auto !important;
+  transition: none !important;
 }
 @media (max-width: 768px) {
   body.dpr-sidebar-v2 .content {
-    left: 0;
-    width: 100%;
+    left: 0 !important;
+    width: 100% !important;
   }
 }
 
@@ -6904,18 +6914,36 @@ body.dpr-sidebar-v2 .content {
   text-align: center;
   font-weight: 600;
 }
-.dpr-sidebar-filter-btn[data-filter="unread"] .dpr-sidebar-unread-count[textContent="0"] {
+.dpr-sidebar-filter-btn[data-filter="unread"] .dpr-sidebar-unread-count[data-count="0"] {
   display: none;
 }
 
 /* body */
 .dpr-sidebar-body {
+  position: static !important;
+  margin: 0 !important;
+  width: 100% !important;
+  inset: auto !important;
   flex: 1;
   min-height: 0;
   overflow: auto;
   padding: 8px 0 16px;
   font-size: 13px;
   scroll-behavior: smooth;
+  display: block !important;
+}
+/* docsify 会给 <nav> 自动加 .app-nav，触发 vue.css 的
+   `.app-nav li ul{position:absolute;right:-15px;white-space:nowrap;...}`
+   把侧边栏内部 ul 当成下拉菜单定位。用 ID 作用域强覆盖。 */
+#dpr-sidebar-v2 ul,
+#dpr-sidebar-v2 li {
+  position: static !important;
+  left: auto !important;
+  right: auto !important;
+  top: auto !important;
+  bottom: auto !important;
+  white-space: normal !important;
+  margin: 0;
 }
 .dpr-sidebar-body::-webkit-scrollbar {
   width: 6px;
@@ -6941,12 +6969,15 @@ body.dpr-sidebar-v2 .content {
   list-style: none;
   margin: 0;
   padding: 0;
+  display: block !important;
 }
 
 /* 日期 / 会议 折叠头 */
 .dpr-sidebar-day,
-.dpr-sidebar-conf {
+.dpr-sidebar-conf,
+.dpr-sidebar-conf-topic {
   margin: 0;
+  display: list-item !important;
 }
 .dpr-sidebar-day-header,
 .dpr-sidebar-conf-header {
@@ -7005,12 +7036,19 @@ body.dpr-sidebar-v2 .content {
   list-style: none;
   margin: 0;
   padding: 0;
+  display: block !important;
   max-height: 0;
   overflow: hidden;
   transition: max-height .2s ease;
 }
 .dpr-sidebar-day.is-expanded > .dpr-sidebar-day-papers,
-.dpr-sidebar-conf.is-expanded > .dpr-sidebar-conf-topics {
+.dpr-sidebar-conf.is-expanded > .dpr-sidebar-conf-topics,
+.dpr-sidebar-conf-topic.is-expanded > .dpr-sidebar-topic-papers {
+  max-height: none;
+}
+/* 会议展开时，内部 topic 的论文列表一并展开（topic 不独立折叠；
+   会议折叠时由 .dpr-sidebar-conf-topics 的 max-height:0 统一收纳） */
+.dpr-sidebar-conf.is-expanded .dpr-sidebar-topic-papers {
   max-height: none;
 }
 .dpr-sidebar-conf-topic-label {
@@ -7051,6 +7089,40 @@ body.dpr-sidebar-v2 .content {
 }
 .dpr-sidebar-paper[data-read="1"] {
   opacity: 0.55;
+}
+.dpr-sidebar-paper[data-read-status="good"],
+.dpr-sidebar-paper[data-read-status="bad"],
+.dpr-sidebar-paper[data-read-status="blue"],
+.dpr-sidebar-paper[data-read-status="orange"] {
+  opacity: 0.88;
+}
+.dpr-sidebar-paper[data-read-status="good"] {
+  background: #f0fdf4;
+  border-left-color: #22c55e;
+}
+.dpr-sidebar-paper[data-read-status="bad"] {
+  background: #fef2f2;
+  border-left-color: #ef4444;
+}
+.dpr-sidebar-paper[data-read-status="blue"] {
+  background: #eff6ff;
+  border-left-color: #3b82f6;
+}
+.dpr-sidebar-paper[data-read-status="orange"] {
+  background: #faf5ff;
+  border-left-color: #8b5cf6;
+}
+.dpr-sidebar-paper.is-active[data-read-status="good"] {
+  background: #dcfce7;
+}
+.dpr-sidebar-paper.is-active[data-read-status="bad"] {
+  background: #fee2e2;
+}
+.dpr-sidebar-paper.is-active[data-read-status="blue"] {
+  background: #dbeafe;
+}
+.dpr-sidebar-paper.is-active[data-read-status="orange"] {
+  background: #f3e8ff;
 }
 .dpr-sidebar-paper-link {
   display: flex;

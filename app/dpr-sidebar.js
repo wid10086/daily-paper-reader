@@ -96,6 +96,66 @@
     if (!s) return '';
     return s;
   }
+  function normalizeRouteHref(href) {
+    var h = String(href || '').trim();
+    if (!h) return '';
+    var idx = h.indexOf('?');
+    if (idx >= 0) h = h.slice(0, idx);
+    if (h.startsWith('#/')) return h;
+    if (h.startsWith('#')) return '#/' + h.slice(1).replace(/^\//, '');
+    return '#/' + h.replace(/^\//, '');
+  }
+  function dayReportHrefFromKey(dateKey, explicitHref) {
+    var explicit = normalizeRouteHref(explicitHref || '');
+    if (explicit && !/^#\/javascript:/i.test(explicit)) return explicit;
+    var key = String(dateKey || '').trim();
+    if (/^\d{8}$/.test(key)) {
+      return '#/' + key.slice(0, 6) + '/' + key.slice(6, 8) + '/README';
+    }
+    if (/^\d{8}-\d{8}$/.test(key)) {
+      return '#/' + key + '/README';
+    }
+    return '';
+  }
+  function collectPaperHrefsFromModel(model) {
+    var out = [];
+    var m = model || state.model || {};
+    (m.daily || []).forEach(function (day) {
+      (day.papers || []).forEach(function (paper) {
+        if (paper && paper.href) out.push(normalizeRouteHref(paper.href));
+      });
+    });
+    (m.conferences || []).forEach(function (conf) {
+      (conf.topics || []).forEach(function (topic) {
+        (topic.papers || []).forEach(function (paper) {
+          if (paper && paper.href) out.push(normalizeRouteHref(paper.href));
+        });
+      });
+    });
+    return out.filter(Boolean);
+  }
+  function collectReportHrefsFromModel(model) {
+    var out = [];
+    var m = model || state.model || {};
+    (m.daily || []).forEach(function (day) {
+      var href = day && (day.reportHref || dayReportHrefFromKey(day.dateKey));
+      if (href) out.push(normalizeRouteHref(href));
+    });
+    return out.filter(Boolean);
+  }
+  function findCurrentPaperHrefFromModel(model, href) {
+    var current = normalizeRouteHref(href || currentRouteHref());
+    return collectPaperHrefsFromModel(model).indexOf(current) >= 0 ? current : '';
+  }
+  function findCurrentReportHrefFromModel(model, href) {
+    var current = normalizeRouteHref(href || currentRouteHref());
+    return collectReportHrefsFromModel(model).indexOf(current) >= 0 ? current : '';
+  }
+  function normalizeReadStatus(value) {
+    if (value === true || value === 'read') return 'read';
+    if (value === 'good' || value === 'bad' || value === 'blue' || value === 'orange') return value;
+    return '';
+  }
 
   // ---------- 阅读状态（包一层，方便切换 Supabase / localStorage） ----------
   var ReadState = {
@@ -114,7 +174,7 @@
     },
     isRead: function (paperId) {
       if (!paperId) return false;
-      return !!this.getAll()[paperId];
+      return !!normalizeReadStatus(this.getAll()[paperId]);
     },
   };
 
@@ -143,7 +203,8 @@
       // 顶层链接 line: "* <a ... href="#/" >首页</a>"
       var m = line.match(/href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/);
       if (!m) return null;
-      return { href: m[1], label: stripTags(m[2]) };
+      var hashMatch = line.match(/data-dpr-hash="([^"]+)"/);
+      return { href: hashMatch ? hashMatch[1] : m[1], label: stripTags(m[2]) };
     }
     function stripTags(html) {
       var d = document.createElement('div');
@@ -206,10 +267,13 @@
           var dayLine = lines[i];
           var markerMatch = dayLine.match(/<!--dpr-date:(\d+)-->/);
           if (/^\s{2}\*\s/.test(dayLine) && !/^\s{4}/.test(dayLine)) {
+            var dayLink = parseTopLink(dayLine);
             var rawLabel = dayLine.replace(/^\s{2}\*\s+/, '').replace(/<!--.*?-->/g, '').trim();
+            var dateKey = markerMatch ? markerMatch[1] : rawLabel;
             var day = {
-              dateKey: markerMatch ? markerMatch[1] : rawLabel,
-              dateLabel: rawLabel || (markerMatch ? formatDateLabel(markerMatch[1]) : ''),
+              dateKey: dateKey,
+              dateLabel: (dayLink && dayLink.label) || rawLabel || (markerMatch ? formatDateLabel(markerMatch[1]) : ''),
+              reportHref: dayReportHrefFromKey(dateKey, dayLink && dayLink.href),
               papers: [],
             };
             i += 1;
@@ -389,11 +453,7 @@
 
   // ---------- 路由 / active ----------
   function currentRouteHref() {
-    var h = String(window.location.hash || '');
-    if (!h) return '#/';
-    var idx = h.indexOf('?');
-    if (idx >= 0) h = h.slice(0, idx);
-    return h;
+    return normalizeRouteHref(window.location.hash || '#/');
   }
   function findActivePaper() {
     var href = currentRouteHref();
@@ -410,6 +470,14 @@
     document.body.appendChild(aside);
     document.body.classList.add('dpr-sidebar-v2');
     return aside;
+  }
+
+  // docsify 主题会把渲染到 <nav> 上的 .app-nav 当成顶部导航栏，
+  // 进而触发 `.app-nav li ul{position:absolute;...}` 等下拉菜单规则，
+  // 会破坏侧边栏内 ul/li 的正常流式布局。挂载后剥离这两类名。
+  function stripAppNav(node) {
+    if (!node || !node.classList) return;
+    node.classList.remove('app-nav', 'no-badge');
   }
 
   function renderShell(root) {
@@ -433,7 +501,7 @@
       '  </div>' +
       '  <div class="dpr-sidebar-filter" role="tablist">' +
       '    <button type="button" class="dpr-sidebar-filter-btn ' + filterAllActive + '" data-filter="all">全部</button>' +
-      '    <button type="button" class="dpr-sidebar-filter-btn ' + filterUnreadActive + '" data-filter="unread">未读 <span class="dpr-sidebar-unread-count">0</span></button>' +
+      '    <button type="button" class="dpr-sidebar-filter-btn ' + filterUnreadActive + '" data-filter="unread">未读 <span class="dpr-sidebar-unread-count" data-count="0">0</span></button>' +
       '  </div>' +
       '</div>' +
       '<nav class="dpr-sidebar-body" aria-label="论文导航"></nav>' +
@@ -443,6 +511,8 @@
     state.bodyEl = $('.dpr-sidebar-body', root);
     state.searchInput = $('.dpr-sidebar-search', root);
     state.unreadCountEl = $('.dpr-sidebar-unread-count', root);
+    // 渲染后立刻剥离 docsify 注入的 .app-nav / .no-badge（防下拉菜单定位）
+    stripAppNav(state.bodyEl);
   }
 
   function renderBody() {
@@ -530,6 +600,7 @@
       'data-section="' + safeAttr(p.section || '') + '"',
       'data-search="' + safeAttr(searchHaystack) + '"',
       'data-read="0"',
+      'data-read-status=""',
     ].join(' ');
     var stars = starHtmlFromScore(p.score);
     var tagBits = tagsHtml(p.tags);
@@ -554,9 +625,10 @@
     var totalUnread = 0;
     $$('.dpr-sidebar-paper', state.bodyEl).forEach(function (li) {
       var id = li.getAttribute('data-paper-id');
-      var read = id && readMap[id];
-      li.setAttribute('data-read', read ? '1' : '0');
-      if (!read) totalUnread += 1;
+      var status = normalizeReadStatus(id && readMap[id]);
+      li.setAttribute('data-read', status ? '1' : '0');
+      li.setAttribute('data-read-status', status);
+      if (!status) totalUnread += 1;
     });
     // 每个日期/会议节点的 unread 计数
     $$('.dpr-sidebar-day, .dpr-sidebar-conf', state.bodyEl).forEach(function (group) {
@@ -575,7 +647,10 @@
         group.classList.remove('is-all-read');
       }
     });
-    if (state.unreadCountEl) state.unreadCountEl.textContent = String(totalUnread);
+    if (state.unreadCountEl) {
+      state.unreadCountEl.textContent = String(totalUnread);
+      state.unreadCountEl.setAttribute('data-count', String(totalUnread));
+    }
   }
 
   function applyFilterAndSearch() {
@@ -610,6 +685,7 @@
 
   function syncActive() {
     if (!state.bodyEl) return;
+    stripAppNav(state.bodyEl); // docsify 可能再次注入 .app-nav（每次路由）
     var href = findActivePaper();
     $$('.dpr-sidebar-paper.is-active', state.bodyEl).forEach(function (li) {
       li.classList.remove('is-active');
@@ -653,6 +729,36 @@
     var current = state.bodyEl.scrollTop;
     var targetTop = current + (liRect.top - bodyRect.top) - bodyRect.height / 2 + liRect.height / 2;
     state.bodyEl.scrollTo({ top: Math.max(0, targetTop), behavior: 'smooth' });
+  }
+
+  function dispatchSidebarUpdated() {
+    if (!document || typeof document.dispatchEvent !== 'function') return;
+    var detail = {
+      paperHrefs: collectPaperHrefsFromModel(state.model),
+      reportHrefs: collectReportHrefsFromModel(state.model),
+      currentPaperHref: findCurrentPaperHrefFromModel(state.model),
+      currentReportHref: findCurrentReportHrefFromModel(state.model),
+    };
+    try {
+      document.dispatchEvent(new CustomEvent('dpr-sidebar-updated', { detail: detail }));
+    } catch (e) {
+      try {
+        var event = document.createEvent('CustomEvent');
+        event.initCustomEvent('dpr-sidebar-updated', false, false, detail);
+        document.dispatchEvent(event);
+      } catch (ignored) {}
+    }
+  }
+
+  function toggleMobile(open) {
+    var root = state.rootEl || $('#dpr-sidebar-v2');
+    if (!root || !root.classList) return false;
+    if (typeof open === 'boolean') {
+      root.classList.toggle('is-open', open);
+    } else {
+      root.classList.toggle('is-open');
+    }
+    return root.classList.contains('is-open');
   }
 
   // ---------- 事件 ----------
@@ -793,6 +899,7 @@
         updateReadStateMarks();
         applyFilterAndSearch();
         syncActive();
+        dispatchSidebarUpdated();
       })
       .catch(function (err) {
         console.error('[DPR Sidebar] 加载失败:', err);
@@ -817,13 +924,37 @@
     loadAndRender();
   }
 
-  // 让正文页（评分按钮）能广播读状态变化
-  window.DPRSidebar = {
+  var DPRSidebarApi = {
     refresh: function () { return loadAndRender(); },
     syncActive: syncActive,
     notifyReadStateChanged: function () { updateReadStateMarks(); },
     getReadState: function () { return ReadState.getAll(); },
+    getPaperHrefs: function () { return collectPaperHrefsFromModel(state.model); },
+    getReportHrefs: function () { return collectReportHrefsFromModel(state.model); },
+    getCurrentHref: function () { return currentRouteHref(); },
+    getCurrentPaperHref: function () { return findCurrentPaperHrefFromModel(state.model); },
+    getCurrentReportHref: function () { return findCurrentReportHrefFromModel(state.model); },
+    openMobile: function () { return toggleMobile(true); },
+    closeMobile: function () { return toggleMobile(false); },
+    toggleMobile: function () { return toggleMobile(); },
   };
+
+  // 让正文页（评分按钮）和 docsify 插件能消费侧栏状态。
+  window.DPRSidebar = DPRSidebarApi;
+
+  if (typeof module === 'object' && module.exports) {
+    module.exports = {
+      api: DPRSidebarApi,
+      __test: {
+        parseSidebar: parseSidebar,
+        collectPaperHrefsFromModel: collectPaperHrefsFromModel,
+        collectReportHrefsFromModel: collectReportHrefsFromModel,
+        findCurrentPaperHrefFromModel: findCurrentPaperHrefFromModel,
+        findCurrentReportHrefFromModel: findCurrentReportHrefFromModel,
+        normalizeReadStatus: normalizeReadStatus,
+      },
+    };
+  }
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', start);
