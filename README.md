@@ -35,6 +35,9 @@
 
 ## 📰 News
 
+- **2026-07-07** 🎛️ 微调会议与侧边栏显示（`f202c703` / `a12d6d2b`）：ACL 2026 与 ICML 2026 年份按钮右上角增加星标提示，并将新版 sidebar 默认宽度从 373px 收窄到 298px，旧默认宽度会自动迁移到新宽度。
+- **2026-07-07** 🏛️ 接入 ICML 2026 会议论文（`69a55296`）：从 OpenReview 同步 accepted 与公开 reject 共 6,555 篇论文，其中官方录取 6,341 篇，并补齐 PDF 链接、向量索引、统一会议检索与前端年份统计。
+- **2026-07-07** 🏛️ 接入 ACL 2026 会议论文（`89351061`）：从 ACL Anthology 同步 Long / Short / Findings 共 4,459 篇公开论文，补齐 PDF 直链、向量索引与会议年份统计，并开放前端 ACL 2026 年份按钮。
 - **2026-07-01** 🧭 修复侧边栏 v2 收起与冻结层细节（`adaa0dab` / `9384abb4` / `5b9c807a`）：大屏收起后侧边栏真正归零，正文重新居中；论文页 AI 输入框、模型选择、底部工具区与问题面板随正文一起居中，并修复冻结标题遮罩压住首篇论文的问题。
 - **2026-07-01** 🔄 支持 Sync Fork 后再更新自有静态资源（`19ceb63a`）：项目自有 `app/*.js` / `app/*.css` 默认从当前站点本地加载，只有显式配置版本时才走不可变 CDN 路径，避免 CDN 自动部署后用户立即拿到未同步资源。
 - **2026-07-01** 🏛️ 打通统一会议年份检索（`801c1c1b` / `4de71724` / `13154da5`）：新增统一会议论文入口与 RPC 过滤能力，前端可把多个会议年份组合成一次检索，并按所选论文总数限制在 3 万篇以内，同时按论文数量线性估算费用与耗时。
@@ -277,4 +280,10 @@ QQ 群：583867967（欢迎交流，已有：1151 人）
 
 ## ⭐ Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=ziwenhahaha/daily-paper-reader&type=Date&showForks=true)](https://star-history.com/#ziwenhahaha/daily-paper-reader&Date)
+<a href="https://www.star-history.com/?type=date&repos=ziwenhahaha%2Fdaily-paper-reader">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=ziwenhahaha/daily-paper-reader&type=date&theme=dark&legend=top-left&sealed_token=HZNlFXt8xbwRv5OoiqbjkjDPJoOuXlfSMxuVmHWAdDqfd9IVMab3xcK4VxF3DlJAvaO71PL3smUpfEw-NjNT83w8NqNJ0UPIhoNcxbiPhTMQkoMhkawF1w" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=ziwenhahaha/daily-paper-reader&type=date&legend=top-left&sealed_token=HZNlFXt8xbwRv5OoiqbjkjDPJoOuXlfSMxuVmHWAdDqfd9IVMab3xcK4VxF3DlJAvaO71PL3smUpfEw-NjNT83w8NqNJ0UPIhoNcxbiPhTMQkoMhkawF1w" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=ziwenhahaha/daily-paper-reader&type=date&legend=top-left&sealed_token=HZNlFXt8xbwRv5OoiqbjkjDPJoOuXlfSMxuVmHWAdDqfd9IVMab3xcK4VxF3DlJAvaO71PL3smUpfEw-NjNT83w8NqNJ0UPIhoNcxbiPhTMQkoMhkawF1w" />
+ </picture>
+</a>

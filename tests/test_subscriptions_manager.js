@@ -161,16 +161,16 @@ function testConferenceCurrentYearDisabledForPendingSources() {
   const currentYear = String(new Date().getFullYear());
   const previousYear = String(new Date().getFullYear() - 1);
 
-  // Pending current year: NeurIPS, ICML are disabled for current year
+  // Pending current year: NeurIPS is disabled for current year.
   assert.equal(isConferenceYearSelectable('NeurIPS', currentYear), false);
   assert.equal(isConferenceYearSelectable('NIPS', currentYear), false);
-  assert.equal(isConferenceYearSelectable('ICML', currentYear), false);
   assert.equal(isConferenceYearSelectable('NeurIPS', previousYear), true);
   assert.equal(isConferenceYearSelectable('NIPS', previousYear), true);
-  assert.equal(isConferenceYearSelectable('ICML', previousYear), true);
   // 2026 available sources are explicitly whitelisted; pending/future sources stay disabled
   assert.equal(isConferenceYearSelectable('ICLR', currentYear), true);
+  assert.equal(isConferenceYearSelectable('ICML', currentYear), true);
   assert.equal(isConferenceYearSelectable('AAAI', currentYear), true);
+  assert.equal(isConferenceYearSelectable('ACL', currentYear), true);
   assert.equal(isConferenceYearSelectable('OSDI', currentYear), true);
   assert.equal(isConferenceYearSelectable('IEEE S&P', currentYear), true);
   assert.equal(isConferenceYearSelectable('CVPR', currentYear), false);
@@ -204,6 +204,24 @@ function testConferenceYearChoicesShowTwoDigitYearAndStoredTotalOnly() {
         stored_accepted_count: 379,
         stored_rejected_count: 22,
       },
+      {
+        conference_key: 'icml',
+        conference_label: 'ICML',
+        year: 2026,
+        official_accepted_count: 6341,
+        stored_total_count: 6555,
+        stored_accepted_count: 6341,
+        stored_rejected_count: 214,
+      },
+      {
+        conference_key: 'acl',
+        conference_label: 'ACL',
+        year: 2026,
+        official_accepted_count: 4459,
+        stored_total_count: 4459,
+        stored_accepted_count: 4459,
+        stored_rejected_count: 0,
+      },
     ],
   });
 
@@ -216,6 +234,8 @@ function testConferenceYearChoicesShowTwoDigitYearAndStoredTotalOnly() {
   assert.equal(html.includes('拒稿'), false);
   assert.equal(html.includes('379'), false);
   assert.ok(html.includes('aria-pressed="true"'));
+  assert.equal((html.match(/is-featured-conference-year/g) || []).length, 2);
+  assert.equal((html.match(/dpr-choice-feature-star/g) || []).length, 2);
 }
 
 async function testConferenceStatsLoadReusesBootstrappedJsonPromise() {

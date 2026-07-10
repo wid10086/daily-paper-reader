@@ -111,16 +111,16 @@ window.SubscriptionsManager = (function () {
     'NDSS',
   ];
   const CONFERENCE_STATS_SNAPSHOT_URL = 'app/conference-stats.json';
-  // 2026 年会议数据可用性（截至 2026-06）：
-  // 有数据: ICLR 2026, AAAI 2026, OSDI 2026, IEEE S&P 2026, NDSS 2026
+  // 2026 年会议数据可用性（截至 2026-07）：
+  // 有数据: ICLR 2026, ICML 2026, AAAI 2026, ACL 2026, OSDI 2026, IEEE S&P 2026, NDSS 2026
   // 无数据: CVPR/SOSP 2026（论文 PDF 尚未全量公开或未上传）
-  const CONFERENCE_2026_AVAILABLE = new Set(['ICLR', 'AAAI', 'OSDI', 'IEEE S&P', 'NDSS']);
+  const CONFERENCE_2026_AVAILABLE = new Set(['ICLR', 'ICML', 'AAAI', 'ACL', 'OSDI', 'IEEE S&P', 'NDSS']);
+  const FEATURED_CONFERENCE_YEAR_PAIRS = new Set(['acl:2026', 'icml:2026']);
   // ECCV 是双年会议（偶数年）
   const BIENNIAL_EVEN_CONFERENCES = new Set(['ECCV']);
   const CONFERENCES_WITH_PENDING_CURRENT_YEAR = new Set([
     'NIPS',
     'NEURIPS',
-    'ICML',
   ]);
   const MAX_CONFERENCE_STORED_TOTAL = 30000;
   const CONFERENCE_ESTIMATE_PAPERS_UNIT = 10000;
@@ -268,6 +268,7 @@ window.SubscriptionsManager = (function () {
           const classes = [
             'dpr-choice-pill',
             stats ? 'has-conference-stats' : '',
+            FEATURED_CONFERENCE_YEAR_PAIRS.has(`${normalizeConferenceStatsKey(name)}:${year}`) ? 'is-featured-conference-year' : '',
             active ? 'is-active' : '',
             disabled ? 'is-disabled' : '',
           ].filter(Boolean).join(' ');
@@ -276,6 +277,9 @@ window.SubscriptionsManager = (function () {
           const labelHtml = stats
             ? `<span class="dpr-choice-year">${escapeHtml(shortYear)}</span><span class="dpr-choice-total-wrap"> (<span class="dpr-choice-total">${escapeHtml(String(stats.stored_total_count))}</span>)</span>`
             : `<span class="dpr-choice-year">${escapeHtml(shortYear)}</span>`;
+          const featureStar = FEATURED_CONFERENCE_YEAR_PAIRS.has(`${normalizeConferenceStatsKey(name)}:${year}`)
+            ? '<span class="dpr-choice-feature-star" aria-hidden="true">★</span>'
+            : '';
           return `<button
             class="${classes}"
             type="button"
@@ -284,7 +288,7 @@ window.SubscriptionsManager = (function () {
             aria-pressed="${active ? 'true' : 'false'}"
             aria-label="${escapeHtml(`${name} ${visibleLabel}`)}"
             ${disabled ? `disabled title="${escapeHtml(reason)}"` : ''}
-          ><span class="dpr-choice-pill-main">${labelHtml}</span></button>`;
+          ><span class="dpr-choice-pill-main">${labelHtml}</span>${featureStar}</button>`;
         })
         .join('');
       return `<div class="dpr-conference-choice-row">
