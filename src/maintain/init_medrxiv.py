@@ -6,6 +6,8 @@ import argparse
 import os
 import subprocess
 import sys
+
+from common import count_raw_rows
 from datetime import datetime, timedelta, timezone
 
 try:
@@ -18,7 +20,7 @@ SCRIPT_DIR = os.path.dirname(__file__)
 TODAY_STR = datetime.now(timezone.utc).strftime("%Y%m%d")
 LONG_RANGE_DAYS_THRESHOLD = 7
 DEFAULT_EMBED_BATCH_SIZE = 8
-DEFAULT_EMBED_CHUNK_SIZE = 512
+DEFAULT_EMBED_CHUNK_SIZE = 128
 LOCAL_MAINTAIN_EMBED_BATCH_SIZE = 64
 LOCAL_MAINTAIN_EMBED_CHUNK_SIZE = 1024
 
@@ -114,11 +116,23 @@ def main() -> None:
     else:
         print(f"[INFO] Step 1 已跳过，复用原始文件：{raw_path}", flush=True)
 
+    # 零结果前置检查：与 init_arxiv.py 保持一致。
+    # 抓取本身没报错、只是窗口内没有新论文时，属正常空跑，不应让 sync 因缺文件而崩。
+    fetch_count = count_raw_rows(raw_path)
+    print(f"[INFO] medRxiv fetch 预检结果：count={fetch_count}，raw_path={raw_path}", flush=True)
+    if fetch_count <= 0:
+        print("[INFO] 本次 medRxiv 抓取无新增论文，已跳过 Supabase 同步。", flush=True)
+        return
+
     sync_cmd = [
         python,
         os.path.join(SCRIPT_DIR, "sync.py"),
         "--backend-key",
         "medrxiv",
+        # 显式指定目标表，与 11 个会议 init 保持一致：
+        # 不依赖 SUPABASE_PAPERS_TABLE 环境变量，避免漏配时写错表。
+        "--papers-table",
+        "medrxiv_papers",
         "--date",
         date_str,
         "--schema",
@@ -146,6 +160,7 @@ def main() -> None:
         "--raw-input",
         raw_path,
     ]
+    sync_cmd.append("--stream-upsert")
     if args.local_maintain:
         sync_cmd.append("--local-maintain-mode")
     if args.embed_model:

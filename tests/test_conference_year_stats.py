@@ -16,6 +16,19 @@ def _load_module():
 
 
 class ConferenceYearStatsTest(unittest.TestCase):
+    def test_ijcai_2026_official_acceptances_remain_distinct_from_proceedings_inventory(self):
+        stats = self.mod.build_conference_year_stats(
+            {'ijcai_papers': [{'id': 'one', 'source': 'IJCAI-2026-Accepted', 'published': '2026-09-16'}]}
+        )
+        self.assertEqual(stats[0]['official_accepted_count'], 989)
+        self.assertEqual(stats[0]['stored_total_count'], 1)
+
+    def test_sosp_2026_official_count_is_independent_of_inventory(self):
+        stats = self.mod.build_conference_year_stats(
+            {'sosp_papers': [{'id': 'one', 'source': 'SOSP-2026-ACM', 'published': '2026-01-01'}]})
+        self.assertEqual(stats[0]['official_accepted_count'], 62)
+        self.assertEqual(stats[0]['stored_total_count'], 1)
+
     @classmethod
     def setUpClass(cls):
         cls.mod = _load_module()
@@ -77,6 +90,14 @@ class ConferenceYearStatsTest(unittest.TestCase):
 
         self.assertEqual(stats[0]["stored_accepted_count"], 2)
         self.assertEqual(stats[0]["official_accepted_count"], 2)
+
+    def test_cvpr_2026_official_total_is_not_replaced_by_partial_inventory(self):
+        stats = self.mod.build_conference_year_stats(
+            {"cvpr_papers": [{"id": "a", "source": "CVPR-2026-Accepted"}]},
+            generated_at="2026-09-05T00:00:00+00:00",
+        )
+        self.assertEqual(stats[0]["official_accepted_count"], 4089)
+        self.assertEqual(stats[0]["stored_total_count"], 1)
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@
 
 window.DPRWorkflowRunner = (function () {
   const WORKFLOWS = [
+    { key: 'topic-research', id: 'topic-research.yml', name: '专题研究', desc: '90天/365天 arXiv 及大礼包（复用标准召回→重排→精排→并发文档生成流水线）。' },
     {
       key: 'daily-now',
       id: 'daily-paper-reader.yml',
@@ -119,6 +120,7 @@ window.DPRWorkflowRunner = (function () {
       const secret = window.decoded_secret_private || {};
       const reranker = secret.rerankerLLM || {};
       const profile = String(reranker.profile || '').trim();
+      if (profile === 'local-qwen3-0.6b' || reranker.provider === 'local') return 'public-zwwen-rerank';
       if (profile) return profile;
       if (isLocalDebugPage()) return 'public-zwwen-rerank';
       return '';
@@ -349,15 +351,20 @@ window.DPRWorkflowRunner = (function () {
       }),
     });
     const run = data.run || {};
+    if (!run.id) throw new Error('本地后端未返回运行记录，无法确认任务已创建。');
     activeRun = { local: true, runId: run.id };
     selectedRun = activeRun;
     setStatus(`本地运行已创建：run_id=${run.id}`, '#080', { waiting: true });
-    await refreshLocalRun(run.id);
+    const firstRefresh = refreshLocalRun(run.id).catch((error) => {
+      setStatus(`任务已提交，但读取进度失败：${error.message || error}`, '#c00');
+    });
+    if (wf.key !== 'reset-content') await firstRefresh;
     refreshTimer = setInterval(() => {
       const r = selectedRun || activeRun;
       if (!r || !r.local) return;
       refreshLocalRun(r.runId);
     }, 5000);
+    return true;
   };
 
   const resolveWorkflowRunInputs = async (owner, repo, token, runId) => {
@@ -696,12 +703,35 @@ window.DPRWorkflowRunner = (function () {
     return merged;
   };
 
+  const buildWorkflowDisplayLabel = (wf, inputs) => {
+    const key = String((wf && wf.key) || '');
+    const inp = inputs && typeof inputs === 'object' ? inputs : {};
+    if (key === 'topic-research') {
+      const tag = String(inp.profile_tag || '').trim();
+      const mode = String(inp.mode || 'starter').trim();
+      const modeLabel = mode === 'starter' ? '大礼包' : `${mode}天`;
+      return tag ? `专题研究 · ${tag}（${modeLabel}）` : `专题研究（${modeLabel}）`;
+    }
+    if (key === 'conference-retrieval') {
+      const target = String(inp.conference_pairs || '').trim()
+        || [inp.conference, inp.years].filter(Boolean).join(' ').trim();
+      const tag = String(inp.profile_tag || '').trim();
+      return `会议论文${target ? ` · ${target}` : ''}${tag ? ` · ${tag}` : ''}`;
+    }
+    if (key === 'daily-now') {
+      const days = String(inp.fetch_days || '').trim();
+      const tag = String(inp.profile_tag || '').trim();
+      return `每日论文${days && days !== '10' ? `（${days}天）` : ''}${tag ? ` · ${tag}` : ''}`;
+    }
+    return String((wf && wf.name) || key || '后台任务');
+  };
+
   const dispatchAndMonitor = async (workflow, extraInputs) => {
     const wf = workflow || {};
     const workflowFile = String(wf.id || '');
     if (!workflowFile) {
       setStatus('工作流配置缺失，无法触发。', '#c00');
-      return;
+      return false;
     }
     const dynamicInputs = { ...(wf.dispatchInputs || {}) };
     const rerankerProfile = loadRerankerProfile();
@@ -721,26 +751,26 @@ window.DPRWorkflowRunner = (function () {
         const msg = e.message || String(e);
         setStatus(`本地触发失败：${msg}`, '#c00');
         runsEl.innerHTML = `<div style="color:#c00;">${escapeHtml(msg)}<br/>请确认本地后端已启动：<code>scripts/local_debug.sh</code> 或 <code>python src/local_debug_server.py --port 8567</code></div>`;
-        return;
+        return false;
       }
     }
     const token = loadGithubToken();
     if (!token) {
       setStatus('未检测到 GitHub Token：请在“密钥配置”或“GitHub Token”处完成配置。', '#c00');
-      return;
+      return false;
     }
     const repoContext = await resolveRepoContext(token);
     const { owner, repo } = repoContext;
     if (!owner || !repo) {
       setStatus('无法推断目标仓库：请确认 GitHub Token 有效，或使用 xxx.github.io/仓库名/ 访问。', '#c00');
-      return;
+      return false;
     }
     if (wf.key === 'sync' && repoContext.isFork === false) {
       setStatus('当前仓库不是 GitHub Fork，无法使用上游同步。', '#c00');
       runsEl.innerHTML =
         '<div style="color:#c00;">当前仓库不是 Fork 仓库，Upstream Sync 不会运行。</div>' +
         `<div style="margin-top:8px;"><a class="arxiv-tool-btn" style="padding:6px 10px; text-decoration:none;" target="_blank" href="https://github.com/${owner}/${repo}/fork">前往 Fork 当前仓库</a></div>`;
-      return;
+      return false;
     }
 
     setStatus(`正在检查工作流状态：${wf.name || workflowFile} ...`, '#666', { waiting: true });
@@ -771,7 +801,7 @@ window.DPRWorkflowRunner = (function () {
           runsEl.innerHTML =
             `<div style="color:#c00;">同一时间只允许运行一个该工作流实例，请等待当前运行结束。</div>` +
             `<div style="margin-top:8px;"><a class="arxiv-tool-btn" style="padding:6px 10px; text-decoration:none;" target="_blank" href="${runUrl}">查看当前运行</a></div>`;
-          return;
+          return false;
         }
       }
 
@@ -806,60 +836,97 @@ window.DPRWorkflowRunner = (function () {
         throw new Error(`触发失败：HTTP ${res.status} ${res.statusText} - ${txt}`);
       }
 
+      const displayLabel = buildWorkflowDisplayLabel(wf, dispatchInputs);
+      let pendingStatusKey = '';
+      if (window.DPRWorkflowStatusSync && typeof window.DPRWorkflowStatusSync.recordDispatched === 'function') {
+        pendingStatusKey = await window.DPRWorkflowStatusSync.recordDispatched({
+          owner,
+          repo,
+          workflowKey: wf.key,
+          workflowFile,
+          displayLabel,
+          dispatchedAt: createdAt.getTime(),
+        }).catch(() => '');
+      }
+
       setStatus('已触发，正在等待运行记录创建...', '#666', { waiting: true });
 
-      // 轮询找到本次 dispatch 对应的 run
-      const lookup = async () => {
-        const runsUrl = `https://api.github.com/repos/${owner}/${repo}/actions/workflows/${encodeURIComponent(
-          workflowFile,
-        )}/runs?event=workflow_dispatch&per_page=10`;
-        const runsRes = await ghFetch(token, runsUrl);
-        if (!runsRes.ok) {
-          const txt = await runsRes.text().catch(() => '');
-          throw new Error(`读取 workflow runs 失败：HTTP ${runsRes.status} ${runsRes.statusText} - ${txt}`);
-        }
-        const data = await runsRes.json();
-        const list = Array.isArray(data.workflow_runs) ? data.workflow_runs : [];
-        const found = list.find((r) => {
-          try {
-            const t = new Date(r.created_at);
-            return t.getTime() >= createdAt.getTime() - 5000;
-          } catch {
-            return false;
+      // 派发确认与进度轮询分离，关闭页面不会把已提交的任务误报为提交失败。
+      const monitor = async () => {
+        // 轮询找到本次 dispatch 对应的 run
+        const lookup = async () => {
+          const runsUrl = `https://api.github.com/repos/${owner}/${repo}/actions/workflows/${encodeURIComponent(
+            workflowFile,
+          )}/runs?event=workflow_dispatch&per_page=10`;
+          const runsRes = await ghFetch(token, runsUrl);
+          if (!runsRes.ok) {
+            const txt = await runsRes.text().catch(() => '');
+            throw new Error(`读取 workflow runs 失败：HTTP ${runsRes.status} ${runsRes.statusText} - ${txt}`);
           }
-        });
-        return found || null;
+          const data = await runsRes.json();
+          const list = Array.isArray(data.workflow_runs) ? data.workflow_runs : [];
+          const found = list.find((r) => {
+            try {
+              const t = new Date(r.created_at);
+              return t.getTime() >= createdAt.getTime() - 5000;
+            } catch {
+              return false;
+            }
+          });
+          return found || null;
+        };
+
+        let run = null;
+        for (let i = 0; i < 18; i += 1) {
+          // 最多等 ~90 秒
+          // eslint-disable-next-line no-await-in-loop
+          run = await lookup();
+          if (run) break;
+          // eslint-disable-next-line no-await-in-loop
+          await new Promise((r) => setTimeout(r, 5000));
+        }
+
+        if (!run || !run.id) {
+          setStatus('已触发，但未能在短时间内找到对应的运行记录。建议打开 Actions 页面查看。', '#c00');
+          runsEl.innerHTML = `<div style="color:#666;">请在 GitHub Actions 查看：<a target="_blank" href="https://github.com/${owner}/${repo}/actions">打开 Actions</a></div>`;
+          return;
+        }
+
+        activeRun = { owner, repo, runId: run.id, token };
+        selectedRun = activeRun;
+        if (window.DPRWorkflowStatusSync && typeof window.DPRWorkflowStatusSync.recordRunStarted === 'function') {
+          window.DPRWorkflowStatusSync.recordRunStarted({
+            owner,
+            repo,
+            workflowKey: wf.key,
+            workflowFile,
+            displayLabel,
+            runId: run.id,
+            runNumber: run.run_number,
+            status: run.status,
+            conclusion: run.conclusion,
+            pendingKey: pendingStatusKey,
+          }).catch(() => {});
+        }
+        setStatus(`运行已创建：run_id=${run.id}，开始拉取进度...`, '#080', { waiting: true });
+        await refreshRun(owner, repo, run.id);
+
+        refreshTimer = setInterval(() => {
+          const r = selectedRun || activeRun;
+          if (!r) return;
+          refreshRun(r.owner, r.repo, r.runId);
+        }, 5000);
+
+        // 触发后刷新最近运行列表
+        loadRecentRuns();
       };
-
-      let run = null;
-      for (let i = 0; i < 18; i += 1) {
-        // 最多等 ~90 秒
-        // eslint-disable-next-line no-await-in-loop
-        run = await lookup();
-        if (run) break;
-        // eslint-disable-next-line no-await-in-loop
-        await new Promise((r) => setTimeout(r, 5000));
-      }
-
-      if (!run || !run.id) {
-        setStatus('已触发，但未能在短时间内找到对应的运行记录。建议打开 Actions 页面查看。', '#c00');
-        runsEl.innerHTML = `<div style="color:#666;">请在 GitHub Actions 查看：<a target="_blank" href="https://github.com/${owner}/${repo}/actions">打开 Actions</a></div>`;
-        return;
-      }
-
-      activeRun = { owner, repo, runId: run.id, token };
-      selectedRun = activeRun;
-      setStatus(`运行已创建：run_id=${run.id}，开始拉取进度...`, '#080', { waiting: true });
-      await refreshRun(owner, repo, run.id);
-
-      refreshTimer = setInterval(() => {
-        const r = selectedRun || activeRun;
-        if (!r) return;
-        refreshRun(r.owner, r.repo, r.runId);
-      }, 5000);
-
-      // 触发后刷新最近运行列表
-      loadRecentRuns();
+      const monitoring = monitor().catch((error) => {
+        setStatus(`任务已提交，但读取进度失败：${error.message || error}`, '#c00');
+        runsEl.innerHTML = `<div style="color:#666;">任务无需重复提交，请在 <a target="_blank" href="https://github.com/${owner}/${repo}/actions">GitHub Actions</a> 查看进度。</div>`;
+      });
+      // 其它入口保留原有等待运行记录的时序；重置按钮只等待派发确认。
+      if (wf.key !== 'reset-content') await monitoring;
+      return true;
     } catch (e) {
       console.error(e);
       const msg = e.message || String(e);
@@ -871,6 +938,7 @@ window.DPRWorkflowRunner = (function () {
       } else {
         runsEl.innerHTML = `<div style="color:#c00;">${escapeHtml(msg)}</div>`;
       }
+      return false;
     }
   };
 
@@ -977,6 +1045,18 @@ window.DPRWorkflowRunner = (function () {
           `运行已结束：${run.conclusion || 'completed'}`,
           run.conclusion === 'success' ? '#080' : '#c00',
         );
+        if (window.DPRWorkflowStatusSync && typeof window.DPRWorkflowStatusSync.recordRunUpdate === 'function') {
+          window.DPRWorkflowStatusSync.recordRunUpdate({
+            owner,
+            repo,
+            runId: run.id,
+            runNumber: run.run_number,
+            status: 'completed',
+            conclusion: run.conclusion || '',
+            stepCode: 'done',
+            stepLabel: run.conclusion === 'success' ? '任务已完成' : '任务结束',
+          }).catch(() => {});
+        }
         // run 状态结束后，刷新“最近运行”列表，确保 completed/success 等状态能及时反映
         if (prevStateKey !== stateKey) {
           loadRecentRuns();
@@ -994,15 +1074,92 @@ window.DPRWorkflowRunner = (function () {
     const wf = getWorkflowByKey(workflowKey);
     if (!wf) {
       setStatus('未找到对应的工作流配置。', '#c00');
-      return;
+      return false;
     }
     open();
+    if (workflowKey === 'topic-research' && isLocalDebugPage()) {
+      setStatus('专题研究仅通过 GitHub Actions 执行，请在你的 GitHub Pages 站点操作；不会在本地执行。', '#c00');
+      return false;
+    }
     return dispatchAndMonitor(wf, extraInputs);
   };
 
-  const runQuickFetchByDays = async (days, extra) => {
-    const parsed = parseInt(days, 10);
-    const normalized = Number.isFinite(parsed) && parsed > 0 ? String(Math.max(1, parsed)) : '10';
+  const STARTER_PACK_CONFERENCES = ['neurips', 'icml', 'iclr', 'aaai', 'cvpr', 'eccv', 'ijcai', 'acl', 'emnlp', 'osdi', 'sosp', 'ndss', 'ieee_sp'];
+  const sanitizeResearchProfile = (value = {}) => {
+    const text = value => {
+      const result = String(value == null ? '' : value).trim();
+      if (result.length > 6000) throw new Error('单个查询字段超过6000字符，请缩短后再试；不会截断查询。');
+      return result;
+    };
+    const entries = (items, fields, limit) => {
+      if (items !== undefined && !Array.isArray(items)) throw new Error('检索条件必须为列表。');
+      if ((items || []).length > limit) throw new Error(`${fields[0] === 'keyword' ? '关键词' : '语义查询'}最多${limit}项，请减少条件；不会静默截断。`);
+      return (items || []).map(item => {
+        const retrievalText = value => {
+          const result = text(value);
+          if (result.length > 1200) throw new Error('检索词或语义查询超过1200字符，请缩短后再试；不会截断查询。');
+          return result;
+        };
+        if (typeof item === 'string') return { [fields[0]]: retrievalText(item), enabled: true };
+        const result = { enabled: item && item.enabled !== false };
+        fields.forEach(field => { if (item && item[field]) result[field] = field === 'keyword' || field === 'query' ? retrievalText(item[field]) : text(item[field]); });
+        return result;
+      });
+    };
+    const groups = value.constraint_groups === undefined ? [] : value.constraint_groups;
+    if (!Array.isArray(groups) || groups.length > 3) throw new Error('限定条件最多3组。');
+    const constraintGroups = groups.map(group => {
+      if (!Array.isArray(group) || !group.length || group.length > 8 || group.some(term => typeof term !== 'string' || term.length > 300 || !/[A-Za-z]/.test(term) || /[\u3400-\u9fff]/.test(term))) throw new Error('每组限定条件需1–8个英文检索词，每个不超过300字符。');
+      return [...new Set(group.map(term => term.trim()))];
+    });
+    if (constraintGroups.reduce((product, group) => product * group.length, 1) > 32) throw new Error('限定条件组合超过32种，请减少查询词；不会静默截断条件。');
+    return {
+      tag: text(value.tag), description: text(value.description), refinement: text(value.refinement),
+      keywords: entries(value.keywords, ['keyword', 'query', 'keyword_cn'], 24),
+      intent_queries: entries(value.intent_queries, ['query', 'query_cn'], 12),
+      ...(constraintGroups.length ? { constraint_groups: constraintGroups } : {}),
+    };
+  };
+  const buildTopicResearchRequest = (options = {}) => {
+    if (!['90', '365', 'starter'].includes(String(options.mode))) throw new Error('请选择支持的专题模式。');
+    const profile = sanitizeResearchProfile(options.profile);
+    const tag = String(profile.tag || '').trim();
+    if (!tag || tag.includes(',')) throw new Error('专题研究需要恰好选择一个词条。');
+    const asOf = String(options.as_of || '').trim();
+    const stamp = Date.parse(asOf + 'T00:00:00Z');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(asOf) || !Number.isFinite(stamp) || new Date(stamp).toISOString().slice(0, 10) !== asOf) {
+      throw new Error('请输入有效的 UTC 截止日期（不含当天）。');
+    }
+    const rawConfs = Array.isArray(options.conferences) ? options.conferences : String(options.conferences || '').split(',');
+    let conferences = [...new Set(rawConfs.map(value => String(value).trim().toLowerCase()).filter(Boolean))];
+    if (!conferences.length) conferences = STARTER_PACK_CONFERENCES.slice();
+    if (conferences.some(value => !STARTER_PACK_CONFERENCES.includes(value))) throw new Error('会议范围包含不支持的会议。');
+    if (!profile.keywords.some(item => item.enabled && (item.keyword || item.query)) && !profile.intent_queries.some(item => item.enabled && item.query)) {
+      throw new Error('所选词条尚无检索词，请先保存有效词条。');
+    }
+    const rawMax = options.max_papers === undefined ? 50 : Number(options.max_papers);
+    if (options.max_papers === null || typeof options.max_papers === 'boolean' || !Number.isInteger(rawMax) || rawMax < 1 || rawMax > 100) {
+      throw new Error('精选上限必须是 1–100 的整数。');
+    }
+    return {
+      key: 'topic-research',
+      inputs: {
+        profile_tag: tag,
+        mode: String(options.mode),
+        as_of: asOf,
+        conferences: conferences.join(','),
+        profile_snapshot: JSON.stringify(profile),
+        max_papers: String(rawMax),
+      },
+    };
+  };
+
+  const buildQuickFetchRequest = (days, extra) => {
+    const parsed = Number(days);
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > 365) {
+      throw new Error('回溯天数必须在 1–365 天之间。');
+    }
+    const normalized = String(parsed);
     const options = extra && typeof extra === 'object' ? extra : {};
     const fetchMode = (typeof options.fetchMode === 'string' ? options.fetchMode : '').trim().toLowerCase();
     const presetKey = fetchMode ? `${normalized}-${fetchMode}` : normalized;
@@ -1014,7 +1171,16 @@ window.DPRWorkflowRunner = (function () {
       },
     };
     const mergedInputs = combineInputs(preset.dispatchInputs, options.dispatchInputs);
-    return runWorkflowByKey(preset.key, mergedInputs);
+    // 不允许额外参数绕开天数校验；31天以上由后端进入独立回溯模式。
+    mergedInputs.fetch_days = normalized;
+    if (parsed > 30) mergedInputs.fetch_mode = 'skims';
+    return { key: preset.key, inputs: mergedInputs };
+  };
+  const runQuickFetchByDays = async (days, extra) => {
+    let request;
+    try { request = buildQuickFetchRequest(days, extra); }
+    catch (error) { setStatus(error.message, '#c00'); return false; }
+    return runWorkflowByKey(request.key, request.inputs);
   };
 
   const normalizeConferenceName = (value) => {
@@ -1104,8 +1270,42 @@ window.DPRWorkflowRunner = (function () {
   const runConferenceMaintain = async (conference, years) =>
     runConferenceRetrieval(conference, years);
 
+  const openRun = async (runId, repoFullName) => {
+    const token = loadGithubToken();
+    if (!token || !runId) return false;
+    let owner = '';
+    let repo = '';
+    const rawRepo = String(repoFullName || '').trim();
+    if (rawRepo.includes('/')) {
+      const parts = rawRepo.split('/');
+      owner = parts[0] || '';
+      repo = parts[1] || '';
+    }
+    if (!owner || !repo) {
+      const ctx = await resolveRepoContext(token);
+      owner = ctx.owner;
+      repo = ctx.repo;
+    }
+    if (!owner || !repo) return false;
+    open();
+    stopPolling();
+    selectedRun = { owner, repo, runId: Number(runId), token };
+    setStatus(`正在加载运行详情：run_id=${runId}`, '#666', { waiting: true });
+    await refreshRun(owner, repo, Number(runId));
+    refreshTimer = setInterval(() => {
+      if (!selectedRun) return;
+      refreshRun(selectedRun.owner, selectedRun.repo, selectedRun.runId);
+    }, 5000);
+    return true;
+  };
+
   return {
+    __test: { buildQuickFetchRequest, buildTopicResearchRequest, sanitizeResearchProfile, buildWorkflowDisplayLabel },
+    buildTopicResearchRequest,
+    sanitizeResearchProfile,
+    isStarterPackSupported: () => !isLocalDebugPage(),
     open,
+    openRun,
     runWorkflowByKey,
     runQuickFetchByDays,
     runConferenceRetrieval,

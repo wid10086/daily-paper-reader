@@ -1,8 +1,9 @@
 import importlib.util
+import json
 import pathlib
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 
 def _load_module(module_name: str, path: pathlib.Path):
@@ -24,14 +25,13 @@ class SyncStreamingPipelineTest(unittest.TestCase):
 
     def test_configure_local_embedding_runtime_reserves_upload_cpus(self):
         with patch.object(self.mod.os, "cpu_count", return_value=64):
-            with patch.object(self.mod.torch, "set_num_threads") as mock_set_threads:
-                with patch.object(self.mod.torch, "set_num_interop_threads") as mock_set_interop:
-                    embed_cpus, reserved = self.mod.configure_local_embedding_runtime(2)
+            with patch.object(self.mod, "torch") as mock_torch:
+                embed_cpus, reserved = self.mod.configure_local_embedding_runtime(2)
 
         self.assertEqual(embed_cpus, 62)
         self.assertEqual(reserved, 2)
-        mock_set_threads.assert_called_once_with(62)
-        mock_set_interop.assert_called_once()
+        mock_torch.set_num_threads.assert_called_once_with(62)
+        mock_torch.set_num_interop_threads.assert_called_once()
 
     def test_stream_embed_and_upsert_submits_chunks_incrementally(self):
         rows = [{"id": "p1"}, {"id": "p2"}, {"id": "p3"}]
@@ -69,6 +69,20 @@ class SyncStreamingPipelineTest(unittest.TestCase):
 
         self.assertEqual(dim, 384)
         self.assertEqual(upload_calls, [["p1", "p2"], ["p3"]])
+
+    def test_upsert_groups_optional_fields_without_clearing_existing_pdf(self):
+        rows = [{"id": "a", "pdf_url": "https://example.org/a.pdf"},
+                {"id": "b"}, {"id": "c", "pdf_url": "https://example.org/c.pdf"}]
+        with patch.object(self.mod.requests, "post", return_value=Mock(status_code=201)) as post:
+            self.mod.upsert_papers(url="https://example.org", service_key="test", table="papers",
+                                   rows=rows, batch_size=100, retries=0)
+        payloads = [json.loads(call.kwargs['data']) for call in post.call_args_list]
+        self.assertEqual(len(payloads), 2)
+        self.assertEqual(sorted(r['id'] for batch in payloads for r in batch), ['a', 'b', 'c'])
+        for batch in payloads:
+            self.assertEqual(len({frozenset(row) for row in batch}), 1)
+        row_b = next(row for batch in payloads for row in batch if row['id'] == 'b')
+        self.assertNotIn('pdf_url', row_b)
 
 
 if __name__ == "__main__":

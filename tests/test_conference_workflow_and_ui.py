@@ -17,8 +17,8 @@ class ConferenceWorkflowAndUiTest(unittest.TestCase):
         self.assertIn("RERANK_API_KEY", text)
         self.assertIn("SILICONFLOW_API_KEY", text)
         self.assertIn('default: "public-zwwen-rerank"', text)
-        self.assertIn("requirements-paper-media.txt", text)
-        self.assertIn("PaperCropper smoke OK", text)
+        self.assertIn("check_cloud_models.py --require-lightweight", text)
+        self.assertNotIn("torch==", text)
 
     def test_conference_retrieval_workflow_dispatches_pipeline(self):
         root = pathlib.Path(__file__).resolve().parents[1]
@@ -43,8 +43,8 @@ class ConferenceWorkflowAndUiTest(unittest.TestCase):
         self.assertIn("RERANK_API_KEY", text)
         self.assertIn("SILICONFLOW_API_KEY", text)
         self.assertIn("DEEPSEEK_API_KEY", text)
-        self.assertIn("requirements-paper-media.txt", text)
-        self.assertIn("PaperCropper smoke OK", text)
+        self.assertIn("check_cloud_models.py --require-lightweight", text)
+        self.assertNotIn("torch==", text)
         self.assertIn("python src/conference_pipeline.py", text)
         self.assertIn("--run-llm-refine", text)
         self.assertIn("--output-dir \"archive/${RUN_DATE}/filtered\"", text)
@@ -120,6 +120,11 @@ class ConferenceWorkflowAndUiTest(unittest.TestCase):
             self.assertIn(f"src/maintain/{source_key}.py", text)
             self.assertIn(f"DPR_ENABLE_{source_key.upper()}_BACKEND", text)
             self.assertIn(f"DPR_{source_key.upper()}_PAPERS_TABLE", text)
+
+    def test_sosp_maintenance_allows_official_metadata_without_pdf(self):
+        root = pathlib.Path(__file__).resolve().parents[1]
+        text = (root / ".github/workflows/maintain-supabase.yml").read_text(encoding="utf-8")
+        self.assertIn('python src/maintain/sosp.py --years "$YEARS" --allow-missing-pdf --skip-cleanup', text)
 
     def test_local_debug_uses_browser_config_override(self):
         root = pathlib.Path(__file__).resolve().parents[1]

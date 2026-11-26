@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-07T12:34:50.299126+00:00",
+  "generated_at": "2026-10-06T12:22:15.904332+00:00",
   "items": [
     {
       "id": "aaai-2026",
@@ -92,13 +92,13 @@
       "conference_label": "CVPR",
       "year": 2026,
       "source_table": "cvpr_papers",
-      "official_accepted_count": 0,
-      "stored_total_count": 0,
-      "stored_accepted_count": 0,
+      "official_accepted_count": 4089,
+      "stored_total_count": 4042,
+      "stored_accepted_count": 4042,
       "stored_rejected_count": 0,
       "stored_other_count": 0,
-      "generated_at": "2026-07-07T12:34:50.299126+00:00",
-      "updated_at": "2026-07-07T12:34:50.299126+00:00"
+      "generated_at": "2026-09-05T06:49:05.939192+00:00",
+      "updated_at": "2026-09-05T06:49:05.939192+00:00"
     },
     {
       "id": "cvpr-2025",
@@ -134,13 +134,13 @@
       "conference_label": "ECCV",
       "year": 2026,
       "source_table": "eccv_papers",
-      "official_accepted_count": 0,
-      "stored_total_count": 0,
-      "stored_accepted_count": 0,
+      "official_accepted_count": 2834,
+      "stored_total_count": 2834,
+      "stored_accepted_count": 2834,
       "stored_rejected_count": 0,
       "stored_other_count": 0,
-      "generated_at": "2026-07-07T12:34:50.299126+00:00",
-      "updated_at": "2026-07-07T12:34:50.299126+00:00"
+      "generated_at": "2026-09-09T08:00:34.231723+00:00",
+      "updated_at": "2026-09-09T08:00:34.231723+00:00"
     },
     {
       "id": "eccv-2025",
@@ -303,12 +303,12 @@
       "year": 2026,
       "source_table": "ieee_sp_papers",
       "official_accepted_count": 254,
-      "stored_total_count": 80,
-      "stored_accepted_count": 80,
+      "stored_total_count": 254,
+      "stored_accepted_count": 254,
       "stored_rejected_count": 0,
       "stored_other_count": 0,
-      "generated_at": "2026-07-07T12:34:50.299126+00:00",
-      "updated_at": "2026-07-07T12:34:50.299126+00:00"
+      "generated_at": "2026-09-05T06:49:05.939192+00:00",
+      "updated_at": "2026-09-05T06:49:05.939192+00:00"
     },
     {
       "id": "ieee_sp-2025",
@@ -344,13 +344,13 @@
       "conference_label": "IJCAI",
       "year": 2026,
       "source_table": "ijcai_papers",
-      "official_accepted_count": 0,
-      "stored_total_count": 0,
-      "stored_accepted_count": 0,
+      "official_accepted_count": 989,
+      "stored_total_count": 971,
+      "stored_accepted_count": 971,
       "stored_rejected_count": 0,
       "stored_other_count": 0,
-      "generated_at": "2026-07-07T12:34:50.299126+00:00",
-      "updated_at": "2026-07-07T12:34:50.299126+00:00"
+      "generated_at": "2026-09-17T03:24:39+00:00",
+      "updated_at": "2026-09-17T03:24:39+00:00"
     },
     {
       "id": "ijcai-2025",
@@ -429,12 +429,12 @@
       "year": 2026,
       "source_table": "neurips_openreview_papers",
       "official_accepted_count": 0,
-      "stored_total_count": 0,
-      "stored_accepted_count": 0,
+      "stored_total_count": 7031,
+      "stored_accepted_count": 7031,
       "stored_rejected_count": 0,
       "stored_other_count": 0,
-      "generated_at": "2026-07-07T12:34:50.299126+00:00",
-      "updated_at": "2026-07-07T12:34:50.299126+00:00"
+      "generated_at": "2026-10-06T12:22:15.904332+00:00",
+      "updated_at": "2026-10-06T12:22:15.904332+00:00"
     },
     {
       "id": "neurips-2025",
@@ -471,12 +471,12 @@
       "year": 2026,
       "source_table": "osdi_papers",
       "official_accepted_count": 136,
-      "stored_total_count": 8,
-      "stored_accepted_count": 8,
+      "stored_total_count": 136,
+      "stored_accepted_count": 136,
       "stored_rejected_count": 0,
       "stored_other_count": 0,
-      "generated_at": "2026-07-07T12:34:50.299126+00:00",
-      "updated_at": "2026-07-07T12:34:50.299126+00:00"
+      "generated_at": "2026-09-05T06:49:05.939192+00:00",
+      "updated_at": "2026-09-05T06:49:05.939192+00:00"
     },
     {
       "id": "osdi-2025",
@@ -512,13 +512,13 @@
       "conference_label": "SOSP",
       "year": 2026,
       "source_table": "sosp_papers",
-      "official_accepted_count": 0,
-      "stored_total_count": 0,
-      "stored_accepted_count": 0,
+      "official_accepted_count": 62,
+      "stored_total_count": 62,
+      "stored_accepted_count": 62,
       "stored_rejected_count": 0,
       "stored_other_count": 0,
-      "generated_at": "2026-07-07T12:34:50.299126+00:00",
-      "updated_at": "2026-07-07T12:34:50.299126+00:00"
+      "generated_at": "2026-10-05T13:15:56.910501+00:00",
+      "updated_at": "2026-10-05T13:15:56.910501+00:00"
     },
     {
       "id": "sosp-2025",

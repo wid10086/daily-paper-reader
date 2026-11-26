@@ -25,29 +25,43 @@ ROOT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
+from daily_report_state import (
+    bootstrap_daily_state_from_sidebar,
+    daily_state_path,
+    entries_from_state,
+    load_daily_state,
+    merge_daily_state,
+    save_daily_state,
+)
+
 try:
     from paper_figures import ensure_paper_media
 except Exception:  # pragma: no cover
     from src.paper_figures import ensure_paper_media
 
 CONFIG_FILE = os.path.join(ROOT_DIR, "config.yaml")
+HOME_TEMPLATE_DIR = os.path.join(ROOT_DIR, "docs_init")
 TODAY_STR = str(os.getenv("DPR_RUN_DATE") or "").strip() or datetime.now(timezone.utc).strftime("%Y%m%d")
 RANGE_DATE_RE = re.compile(r"^(\d{8})-(\d{8})$")
+TOPIC_RANGE_RE = re.compile(r"^(\d{8})-(\d{8})(?:-[A-Za-z0-9._-]+)?$")
 
 # LLM 配置（使用 llm.py 内的 DeepSeek 客户端）
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY") or os.getenv("SUMMARY_API_KEY")
-DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL") or os.getenv("SUMMARY_BASE_URL") or "https://api.deepseek.com"
+DEEPSEEK_API_KEY = os.getenv("SUMMARY_API_KEY") or os.getenv("DEEPSEEK_API_KEY")
+DEEPSEEK_BASE_URL = os.getenv("SUMMARY_BASE_URL") or os.getenv("DEEPSEEK_BASE_URL") or "https://api.deepseek.com"
 DEEPSEEK_MODEL = os.getenv("SUMMARY_MODEL") or os.getenv("DEEPSEEK_MODEL") or "deepseek-v4-flash"
 STEP6_STRUCTURED_MAX_TOKENS = 16 * 1024
 
 
 def create_llm_client() -> DeepSeekClient | None:
-    if not DEEPSEEK_API_KEY:
+    api_key = os.getenv("SUMMARY_API_KEY") or os.getenv("DEEPSEEK_API_KEY") or DEEPSEEK_API_KEY
+    if not api_key:
         return None
+    base_url = os.getenv("SUMMARY_BASE_URL") or os.getenv("DEEPSEEK_BASE_URL") or DEEPSEEK_BASE_URL
+    model = os.getenv("SUMMARY_MODEL") or os.getenv("DEEPSEEK_MODEL") or DEEPSEEK_MODEL
     return DeepSeekClient(
-        api_key=DEEPSEEK_API_KEY,
-        model=DEEPSEEK_MODEL,
-        base_url=DEEPSEEK_BASE_URL,
+        api_key=api_key,
+        model=model,
+        base_url=base_url,
     )
 
 
@@ -578,17 +592,20 @@ def generate_deep_summary(
     messages.append({"role": "user", "content": f"### 论文 Markdown 元数据 ###\n{paper_md_content}"})
     messages.append({"role": "user", "content": user_prompt})
 
+    def _has_end_marker(text: str) -> bool:
+        return "（完）" in text or "(完)" in text
+
     last = ""
     for attempt in range(1, max_retries + 1):
         try:
-            summary = call_llm_text(active_client, messages, temperature=0.3, max_tokens=4096)
+            summary = call_llm_text(active_client, messages, temperature=0.3, max_tokens=6144)
             summary = (summary or "").strip()
             if not summary:
                 continue
             last = summary
             if os.getenv("DPR_DEBUG_STEP6") == "1":
                 log(f"[DEBUG][STEP6] deep_summary attempt={attempt} len={len(summary)} tail={summary[-20:]!r}")
-            if "（完）" in summary:
+            if _has_end_marker(summary):
                 return summary
             # 续写一次：避免输出被截断
             cont_messages = [
@@ -596,12 +613,13 @@ def generate_deep_summary(
                 {"role": "user", "content": "你上一次的总结可能被截断了，请从中断处继续补全，不要重复已输出内容。"},
                 {"role": "user", "content": f"上一次输出如下：\n\n{summary}\n\n请继续补全，最后以一行“（完）”结束。"},
             ]
-            cont = call_llm_text(active_client, cont_messages, temperature=0.3, max_tokens=2048)
+            cont = call_llm_text(active_client, cont_messages, temperature=0.3, max_tokens=3072)
             cont = (cont or "").strip()
-            merged = f"{summary}\n\n{cont}".strip()
+            merged = f"{summary}\n\n{cont}".strip() if cont else summary
+            last = merged
             if os.getenv("DPR_DEBUG_STEP6") == "1":
                 log(f"[DEBUG][STEP6] deep_summary_cont attempt={attempt} len={len(cont)} merged_tail={merged[-20:]!r}")
-            if "（完）" in merged:
+            if _has_end_marker(merged):
                 return merged
         except Exception as e:
             log(f"[WARN] 精读总结失败（第 {attempt} 次）：{e}")
@@ -614,6 +632,7 @@ def generate_glance_overview(
     abstract: str,
     max_retries: int = 3,
     client: DeepSeekClient | None = None,
+    sidebar_context: List[str] | None = None,
 ) -> str | None:
     """
     生成论文速览（包含 TLDR、Motivation、Method、Result、Conclusion）。
@@ -649,6 +668,15 @@ def generate_glance_overview(
         "required": ["tldr", "motivation", "method", "result", "conclusion"],
         "additionalProperties": False,
     }
+    if sidebar_context is not None:
+        payload['topics'] = sidebar_context
+        user_text = json.dumps(payload, ensure_ascii=False)
+        user_prompt += (
+            '\n同时输出 evidence 字段：参照日常论文列表，用15–40字的中文短语概括论文内容与专题的联系，'
+            '不写“标题摘要表明”“所以给几分”等评审过程，不重新评分；邻近或待复核论文不得说成直接解决专题。'
+        )
+        schema['properties']['evidence'] = {'type': 'string'}
+        schema['required'].append('evidence')
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -676,6 +704,9 @@ def generate_glance_overview(
             conclusion = str(obj.get("conclusion") or "").strip()
             if not (tldr and motivation and method and result and conclusion):
                 continue
+            evidence = str(obj.get('evidence') or '').strip()
+            if sidebar_context is not None and not evidence:
+                continue
             return "\n".join(
                 [
                     f"**TLDR**：{ensure_single_sentence_end(tldr)} \\",
@@ -683,7 +714,7 @@ def generate_glance_overview(
                     f"**Method**：{ensure_single_sentence_end(method)} \\",
                     f"**Result**：{ensure_single_sentence_end(result)} \\",
                     f"**Conclusion**：{ensure_single_sentence_end(conclusion)}",
-                ]
+                ] + ([f'**Evidence**：{evidence}'] if evidence else [])
             )
         except Exception as e:
             # 额度不足等“硬失败”不必重试，直接降级
@@ -823,7 +854,7 @@ def replace_meta_line(md_text: str, label: str, value: str, add_slash: bool = Tr
 
 def format_date_str(date_str: str) -> str:
     s = str(date_str or "").strip()
-    m = RANGE_DATE_RE.match(s)
+    m = TOPIC_RANGE_RE.match(s)
     if m:
         a, b = m.group(1), m.group(2)
         return f"{a[:4]}-{a[4:6]}-{a[6:]} ~ {b[:4]}-{b[4:6]}-{b[6:]}"
@@ -832,10 +863,22 @@ def format_date_str(date_str: str) -> str:
     return date_str
 
 
+def _safe_basename(basename: str, *, max_bytes: int = 240) -> str:
+    encoded = basename.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return basename
+    import hashlib
+
+    digest = hashlib.sha1(encoded).hexdigest()[:10]
+    body_limit = max(max_bytes - len(digest) - 1, 16)
+    body = encoded[:body_limit].decode("utf-8", errors="ignore").rstrip("-") or "paper"
+    return f"{body}-{digest}"
+
+
 def prepare_paper_paths(docs_dir: str, date_str: str, title: str, arxiv_id: str) -> Tuple[str, str, str]:
     slug = slugify(title)
-    basename = f"{arxiv_id}-{slug}" if arxiv_id else slug
-    if RANGE_DATE_RE.match(date_str):
+    basename = _safe_basename(f"{arxiv_id}-{slug}" if arxiv_id else slug)
+    if TOPIC_RANGE_RE.match(date_str):
         target_dir = os.path.join(docs_dir, date_str)
         paper_id = f"{date_str}/{basename}"
     else:
@@ -849,7 +892,7 @@ def prepare_paper_paths(docs_dir: str, date_str: str, title: str, arxiv_id: str)
 
 
 def prepare_day_report_paths(docs_dir: str, date_str: str) -> Tuple[str, str]:
-    if RANGE_DATE_RE.match(date_str):
+    if TOPIC_RANGE_RE.match(date_str):
         day_dir = os.path.join(docs_dir, date_str)
     else:
         ym = date_str[:6]
@@ -859,14 +902,31 @@ def prepare_day_report_paths(docs_dir: str, date_str: str) -> Tuple[str, str]:
     return day_dir, day_readme
 
 
-def prepare_home_module_paths(docs_dir: str) -> Tuple[str, str]:
-    notice_path = os.path.join(docs_dir, "_home_notice.md")
-    promo_path = os.path.join(docs_dir, "_home_promo.md")
+def prepare_home_module_paths(
+    docs_dir: str,
+    home_template_dir: str | None = None,
+) -> Tuple[str, str]:
+    template_dir = home_template_dir or HOME_TEMPLATE_DIR
+    template_notice = os.path.join(template_dir, "_home_notice.md")
+    template_promo = os.path.join(template_dir, "_home_promo.md")
+    notice_path = (
+        template_notice
+        if os.path.exists(template_notice)
+        else os.path.join(docs_dir, "_home_notice.md")
+    )
+    promo_path = (
+        template_promo
+        if os.path.exists(template_promo)
+        else os.path.join(docs_dir, "_home_promo.md")
+    )
     return notice_path, promo_path
 
 
-def ensure_home_module_files(docs_dir: str) -> Tuple[str, str]:
-    notice_path, promo_path = prepare_home_module_paths(docs_dir)
+def ensure_home_module_files(
+    docs_dir: str,
+    home_template_dir: str | None = None,
+) -> Tuple[str, str]:
+    notice_path, promo_path = prepare_home_module_paths(docs_dir, home_template_dir)
     if not os.path.exists(notice_path):
         with open(notice_path, "w", encoding="utf-8") as f:
             f.write("────────────────────────────────────────\n")
@@ -1014,6 +1074,61 @@ def build_docsify_id_href(path_no_ext: str) -> str:
     return f"/{p}"
 
 
+def _home_summary_html(summary: str) -> str:
+    paragraphs: List[str] = []
+    for raw_line in str(summary or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        line = re.sub(r"^(?:>|[-*]|\d+[.)])\s*", "", line).strip()
+        if line:
+            paragraphs.append(f"<p>{html.escape(line)}</p>")
+    if not paragraphs:
+        return '<p class="dpr-home-dashboard-empty">今日暂无可展示简报。</p>'
+    return "\n".join(paragraphs)
+
+
+def _home_dashboard_tags(
+    entries: List[Tuple[str, str, List[Tuple[str, str]]]],
+    limit: int = 6,
+) -> str:
+    counts: Dict[str, int] = {}
+    for _, _, tags in entries:
+        seen: Set[str] = set()
+        for kind, label in tags or []:
+            clean_kind = str(kind or "").strip()
+            clean_label = str(label or "").strip()
+            if clean_kind == "score" or not clean_label or clean_label in seen:
+                continue
+            seen.add(clean_label)
+            counts[clean_label] = counts.get(clean_label, 0) + 1
+    if not counts:
+        return ""
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0].lower()))[:limit]
+    return "".join(
+        '<span class="dpr-home-dashboard-tag">'
+        f"{html.escape(label)} <strong>{count}</strong>"
+        "</span>"
+        for label, count in ranked
+    )
+
+
+def _home_dashboard_papers(
+    entries: List[Tuple[str, str, List[Tuple[str, str]]]],
+    limit: int = 3,
+) -> str:
+    if not entries:
+        return ""
+    items = []
+    for paper_id, title, _ in entries[:limit]:
+        safe_title = html.escape((title or "").strip() or paper_id)
+        items.append(
+            '<li><span class="dpr-home-dashboard-paper-title" '
+            f'title="{safe_title}">{safe_title}</span></li>'
+        )
+    return '<ul class="dpr-home-dashboard-paper-list">' + "".join(items) + "</ul>"
+
+
 def build_latest_report_section(
     date_str: str,
     date_label: str | None,
@@ -1022,61 +1137,84 @@ def build_latest_report_section(
     deep_entries: List[Tuple[str, str, List[Tuple[str, str]]]],
     quick_entries: List[Tuple[str, str, List[Tuple[str, str]]]],
     paper_evidence_by_id: Dict[str, str],
+    run_count: int = 1,
+    summary: str | None = None,
 ) -> str:
     effective_label = (date_label or "").strip() or format_date_str(date_str)
     run_status = "成功" if recommend_exists else "未产出 recommend 文件（视为无结果）"
     total = len(deep_entries) + len(quick_entries)
-    summary = build_daily_brief_summary(
-        date_label=effective_label,
-        deep_entries=deep_entries,
-        quick_entries=quick_entries,
-        total_count=total,
-        run_status=run_status,
+    if summary is None:
+        summary = build_daily_brief_summary(
+            date_label=effective_label,
+            deep_entries=deep_entries,
+            quick_entries=quick_entries,
+            total_count=total,
+            run_status=run_status,
+        )
+
+    safe_label = html.escape(effective_label)
+    safe_generated_at = html.escape(generated_at)
+    safe_status = html.escape(run_status)
+    run_count = max(1, int(run_count or 1))
+
+    lines: List[str] = ['<div class="dpr-home-dashboard-grid">']
+    lines.extend(
+        [
+            '<section class="dpr-home-dashboard-card dpr-home-report-card">',
+            '  <div class="dpr-home-dashboard-header">',
+            "    <div>",
+            f'      <span class="dpr-home-dashboard-kicker">{safe_label}</span>',
+            '      <h3 class="dpr-home-dashboard-title">今日汇总</h3>',
+            "    </div>",
+            f'    <strong class="dpr-home-dashboard-count">共 {total} 篇</strong>',
+            "  </div>",
+            '  <dl class="dpr-home-dashboard-stats">',
+            f'    <div class="dpr-home-dashboard-stat"><dt>累计更新</dt><dd>{run_count} 次</dd></div>',
+            f'    <div class="dpr-home-dashboard-stat"><dt>精读</dt><dd>{len(deep_entries)}</dd></div>',
+            f'    <div class="dpr-home-dashboard-stat"><dt>速读</dt><dd>{len(quick_entries)}</dd></div>',
+            "  </dl>",
+            f'  <p class="dpr-home-dashboard-body">最近更新：{safe_generated_at}<br>状态：{safe_status}</p>',
+            "</section>",
+            '<section class="dpr-home-dashboard-card dpr-home-brief-card">',
+            '  <div class="dpr-home-dashboard-header">',
+            "    <div>",
+            '      <span class="dpr-home-dashboard-kicker">合并后生成</span>',
+            '      <h3 class="dpr-home-dashboard-title">今日简报</h3>',
+            "    </div>",
+            '    <strong class="dpr-home-dashboard-count">AI</strong>',
+            "  </div>",
+            '  <div class="dpr-home-dashboard-body">',
+            _home_summary_html(summary),
+            "  </div>",
+            "</section>",
+        ]
     )
 
-    lines: List[str] = []
-    lines.append(f"- 最新运行日期：{effective_label}")
-    lines.append(f"- 运行时间：{generated_at}")
-    lines.append(f"- 运行状态：{run_status}")
-    lines.append(f"- 本次总论文数：{total}")
-    lines.append(f"- 精读区：{len(deep_entries)}")
-    lines.append(f"- 速读区：{len(quick_entries)}")
-    if summary:
-        lines.append("")
-        lines.append("### 今日简报（AI）")
-        lines.append(summary)
-    if RANGE_DATE_RE.match(date_str):
-        report_href = build_docsify_id_href(f"{date_str}/README")
-    else:
-        ym = date_str[:6]
-        day = date_str[6:]
-        report_href = build_docsify_id_href(f"{ym}/{day}/README")
-    lines.append(f"- 详情：[{report_href}]({report_href})")
-    lines.append("")
-    lines.append("### 精读区论文标签")
-    if deep_entries:
-        for idx, (paper_id, title, tags) in enumerate(deep_entries, start=1):
-            safe_title = (title or "").strip() or paper_id
-            evidence = (paper_evidence_by_id.get(str(paper_id).strip(), "") or "").strip()
-            lines.append(f"{idx}. [{safe_title}]({build_docsify_id_href(paper_id)})  ")
-            lines.append(f"   标签：{_format_entry_tags(tags)}")
-            if evidence:
-                lines.append(f"   evidence：{evidence}")
-    else:
-        lines.append("- 本次无精读推荐。")
-    lines.append("")
-    lines.append("### 速读区论文标签")
-    if quick_entries:
-        for idx, (paper_id, title, tags) in enumerate(quick_entries, start=1):
-            safe_title = (title or "").strip() or paper_id
-            evidence = (paper_evidence_by_id.get(str(paper_id).strip(), "") or "").strip()
-            lines.append(f"{idx}. [{safe_title}]({build_docsify_id_href(paper_id)})  ")
-            lines.append(f"   标签：{_format_entry_tags(tags)}")
-            if evidence:
-                lines.append(f"   evidence：{evidence}")
-    else:
-        lines.append("- 本次无速读推荐。")
-    lines.append("")
+    for section_class, title, entries in (
+        ("dpr-home-deep-card", "精读推荐", deep_entries),
+        ("dpr-home-skim-card", "速读推荐", quick_entries),
+    ):
+        tags_html = _home_dashboard_tags(entries)
+        papers_html = _home_dashboard_papers(entries)
+        body_html = papers_html or '<p class="dpr-home-dashboard-empty">今日暂无推荐。</p>'
+        lines.extend(
+            [
+                f'<section class="dpr-home-dashboard-card {section_class}">',
+                '  <div class="dpr-home-dashboard-header">',
+                "    <div>",
+                '      <span class="dpr-home-dashboard-kicker">今日累计</span>',
+                f'      <h3 class="dpr-home-dashboard-title">{title}</h3>',
+                "    </div>",
+                f'    <strong class="dpr-home-dashboard-count">{len(entries)} 篇</strong>',
+                "  </div>",
+                '  <div class="dpr-home-dashboard-body">',
+                body_html,
+                "  </div>",
+                f'  <div class="dpr-home-dashboard-tags">{tags_html}</div>' if tags_html else "",
+                "</section>",
+            ]
+        )
+    lines.append("</div>")
     return "\n".join(lines)
 
 
@@ -1184,7 +1322,7 @@ def extract_sidebar_tags(paper: Dict[str, Any], max_tags: int = 6) -> List[Tuple
         label = (label or "").strip()
         if not label:
             continue
-        dedup_key = f"{kind}:{label}"
+        dedup_key = f"{kind}:{label}".lower()
         if dedup_key in seen_labels:
             continue
         seen_labels.add(dedup_key)
@@ -1210,22 +1348,208 @@ def extract_sidebar_tags(paper: Dict[str, Any], max_tags: int = 6) -> List[Tuple
     return score_tag + tags
 
 
+def build_daily_run_papers(
+    docs_dir: str,
+    date_str: str,
+    deep_list: List[Dict[str, Any]],
+    quick_list: List[Dict[str, Any]],
+    deep_entries: List[Tuple[str, str, List[Tuple[str, str]]]],
+    quick_entries: List[Tuple[str, str, List[Tuple[str, str]]]],
+    evidence_by_route: Dict[str, str],
+) -> Dict[str, List[Dict[str, Any]]]:
+    def source_by_route(papers: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        result: Dict[str, Dict[str, Any]] = {}
+        for paper in papers:
+            title = str(paper.get("title") or "").strip()
+            source_id = str(paper.get("id") or paper.get("paper_id") or "").strip()
+            _, _, route = prepare_paper_paths(docs_dir, date_str, title, source_id)
+            result[route] = paper
+        return result
+
+    def records_for_section(
+        section: str,
+        papers: List[Dict[str, Any]],
+        entries: List[Tuple[str, str, List[Tuple[str, str]]]],
+    ) -> List[Dict[str, Any]]:
+        source_map = source_by_route(papers)
+        records: List[Dict[str, Any]] = []
+        for route, title, entry_tags in entries:
+            source = source_map.get(route) or {}
+            source_id = str(source.get("id") or source.get("paper_id") or route).strip()
+            score: Any = source.get("llm_score")
+            tags: List[Dict[str, str]] = []
+            for kind, label in entry_tags or []:
+                clean_kind = str(kind or "").strip() or "query"
+                clean_label = str(label or "").strip()
+                if not clean_label:
+                    continue
+                if clean_kind == "score":
+                    if score in (None, ""):
+                        score = clean_label
+                    continue
+                tags.append({"kind": clean_kind, "label": clean_label})
+            records.append(
+                {
+                    "paper_id": source_id,
+                    "route": route,
+                    "title": str(title or source.get("title") or route).strip(),
+                    "section": section,
+                    "tags": tags,
+                    "score": score,
+                    "evidence": str(
+                        evidence_by_route.get(route)
+                        or source.get("canonical_evidence")
+                        or ""
+                    ).strip(),
+                }
+            )
+        return records
+
+    return {
+        "deep": records_for_section("deep", deep_list, deep_entries),
+        "quick": records_for_section("quick", quick_list, quick_entries),
+    }
+
+
+def merge_daily_run_results(
+    docs_dir: str,
+    date_str: str,
+    date_label: str,
+    generated_at: str,
+    recommend_exists: bool,
+    deep_list: List[Dict[str, Any]],
+    quick_list: List[Dict[str, Any]],
+    deep_entries: List[Tuple[str, str, List[Tuple[str, str]]]],
+    quick_entries: List[Tuple[str, str, List[Tuple[str, str]]]],
+    evidence_by_route: Dict[str, str],
+) -> Tuple[
+    Dict[str, Any],
+    List[Tuple[str, str, List[Tuple[str, str]]]],
+    List[Tuple[str, str, List[Tuple[str, str]]]],
+    Dict[str, str],
+    str,
+]:
+    state_file = daily_state_path(docs_dir, date_str)
+    try:
+        state = load_daily_state(state_file)
+    except (OSError, ValueError):
+        state = {}
+    if not state:
+        state = bootstrap_daily_state_from_sidebar(
+            sidebar_path=os.path.join(docs_dir, "_sidebar.md"),
+            date_str=date_str,
+            date_label=date_label,
+            generated_at=generated_at,
+        )
+    run_papers = build_daily_run_papers(
+        docs_dir=docs_dir,
+        date_str=date_str,
+        deep_list=deep_list,
+        quick_list=quick_list,
+        deep_entries=deep_entries,
+        quick_entries=quick_entries,
+        evidence_by_route=evidence_by_route,
+    )
+    state = merge_daily_state(
+        existing=state,
+        date_str=date_str,
+        run_papers=run_papers,
+        generated_at=generated_at,
+        recommend_exists=recommend_exists,
+        date_label=date_label,
+    )
+    save_daily_state(state_file, state)
+    merged_deep, merged_quick, merged_evidence = entries_from_state(state)
+    return state, merged_deep, merged_quick, merged_evidence, state_file
+
+
+class PaperFulltextUnavailable(ValueError):
+    """官方已撤回且无法下载的版本，不是可重试的转换故障。"""
+
+
+def is_usable_paper_text(text: str) -> bool:
+    """基本质量门：拒绝空缓存、短错误提示和代理返回的HTML/JSON错误页。"""
+    value = str(text or "").strip()
+    if len(value) < 1200:
+        return False
+    head = value[:1000].lower()
+    if re.search(r"warning: target url returned error|has been withdrawn and is unavailable", head):
+        return False
+    if re.search(r"<!doctype\s+html|<html\b|<body\b", head):
+        return False
+    if value.startswith(("{", "[")) and re.search(r'"(?:error|message|status)"\s*:', head):
+        return False
+    if re.match(r"(?:error|access denied|service unavailable|rate limit|upstream error)\b", head):
+        return False
+    return True
+
+
+PDF_DOWNLOAD_HEADERS = {
+    "User-Agent": "DailyPaperReader/1.0 (+https://github.com/ziwenhahaha/daily-paper-reader)",
+    "Accept": "application/pdf,*/*;q=0.9",
+}
+RETRYABLE_PDF_HTTP_STATUSES = {429, 500, 502, 503, 504, 520, 522, 524}
+
+
+def _download_pdf_response(pdf_url: str, max_retries: int = 3):
+    last_exc = None
+    resp = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = requests.get(
+                pdf_url,
+                timeout=60,
+                headers=PDF_DOWNLOAD_HEADERS,
+            )
+        except requests.RequestException as exc:
+            last_exc = exc
+            if attempt >= max_retries:
+                raise
+            time.sleep(2 * attempt)
+            continue
+        status = getattr(resp, "status_code", None)
+        if isinstance(status, int) and status in RETRYABLE_PDF_HTTP_STATUSES and attempt < max_retries:
+            log(f"[PDF][WARN] 下载遇到 HTTP {status}（第 {attempt}/{max_retries} 次），稍后重试：{pdf_url}")
+            time.sleep(2 * attempt)
+            continue
+        return resp
+    if last_exc is not None:
+        raise last_exc
+    return resp
+
+
 def ensure_text_content(pdf_url: str, txt_path: str) -> str:
     if os.path.exists(txt_path):
         with open(txt_path, "r", encoding="utf-8") as f:
-            return f.read()
+            cached = f.read()
+        if is_usable_paper_text(cached):
+            return cached
     text_content = fetch_paper_markdown_via_jina(pdf_url)
-    if text_content is None and pdf_url:
-        resp = requests.get(pdf_url, timeout=60)
+    if not is_usable_paper_text(text_content) and pdf_url:
+        resp = _download_pdf_response(pdf_url)
+        if resp.status_code == 404 and 'has been withdrawn and is unavailable' in str(text_content or '').lower():
+            raise PaperFulltextUnavailable("该arXiv版本已撤回，官方PDF不可下载")
         resp.raise_for_status()
+        if not resp.content.lstrip().startswith(b"%PDF-"):
+            raise ValueError("全文下载未返回有效PDF，拒绝将错误页保存为论文全文")
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=True) as tmp_pdf:
             tmp_pdf.write(resp.content)
             tmp_pdf.flush()
             text_content = extract_pdf_text(tmp_pdf.name)
-    os.makedirs(os.path.dirname(txt_path), exist_ok=True)
-    with open(txt_path, "w", encoding="utf-8") as f:
-        f.write(text_content or "")
-    return text_content or ""
+    if not is_usable_paper_text(text_content):
+        raise ValueError("论文全文抽取为空或不完整，未发布全文文件")
+    directory = os.path.dirname(txt_path) or "."
+    os.makedirs(directory, exist_ok=True)
+    temporary = ""
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=directory, delete=False) as f:
+            temporary = f.name
+            f.write(text_content)
+        os.replace(temporary, txt_path)
+    finally:
+        if temporary and os.path.exists(temporary):
+            os.unlink(temporary)
+    return text_content
 
 
 def yaml_escape_value(s: str) -> str:
@@ -1252,6 +1576,28 @@ def maybe_generate_paper_figures(
     return figures
 
 
+def _resolve_media_source_key(paper: Dict[str, Any]) -> str:
+    source_key = str(paper.get("source") or "").strip().lower()
+    paper_id = str(paper.get("id") or paper.get("paper_id") or "").strip().lower()
+    if source_key in {"arxiv", "biorxiv"}:
+        return source_key
+    if "arxiv" in source_key:
+        return "arxiv"
+    if "biorxiv" in source_key:
+        return "biorxiv"
+    if (
+        paper_id.startswith("openreview-")
+        or "openreview" in source_key
+        or any(tok in source_key for tok in ("icml", "neurips", "iclr"))
+    ):
+        return "openreview"
+    if source_key:
+        return slugify(source_key) or "conference"
+    if paper.get("conference") or paper.get("conference_key"):
+        return slugify(str(paper.get("conference") or paper.get("conference_key"))) or "conference"
+    return ""
+
+
 def maybe_generate_paper_media(
     paper: Dict[str, Any],
     *,
@@ -1259,13 +1605,17 @@ def maybe_generate_paper_media(
     paper_id: str,
     pdf_url: str,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    source_key = str(paper.get("source") or "").strip().lower()
-    if source_key not in {"arxiv", "biorxiv"}:
+    source_key = _resolve_media_source_key(paper)
+    if not source_key:
         return [], []
     if not str(pdf_url or "").strip():
         return [], []
 
-    asset_key = str(paper.get("id") or paper_id.replace("/", "-")).strip()
+    raw_asset_key = str(paper.get("id") or paper_id.replace("/", "-")).strip()
+    if source_key in {"arxiv", "biorxiv"}:
+        asset_key = _safe_basename(raw_asset_key, max_bytes=240)
+    else:
+        asset_key = _safe_basename(slugify(raw_asset_key) or "paper", max_bytes=240)
     try:
         return ensure_paper_media(
             pdf_url=pdf_url,
@@ -1384,6 +1734,21 @@ def build_markdown_content(
         lines.append(f"source: {yaml_escape_value(paper_source)}")
     if selection_source:
         lines.append(f"selection_source: {yaml_escape_value(selection_source)}")
+    for extra_key in (
+        "id",
+        "doi",
+        "canonical_id",
+        "publication_date",
+        "publication_date_precision",
+        "publication_date_source",
+        "publication_date_kind",
+        "official_pdf_url",
+        "official_link",
+        "conference_acceptance_status",
+    ):
+        extra_val = str(paper.get(extra_key) or "").strip()
+        if extra_val:
+            lines.append(f"{extra_key}: {yaml_escape_value(extra_val)}")
     if figure_assets:
         lines.append(f"figures_json: {yaml_escape_value(json.dumps(figure_assets, ensure_ascii=False))}")
     if table_assets:
@@ -1430,12 +1795,139 @@ def build_tags_list(section: str, llm_tags: List[str]) -> List[str]:
         label = (label or "").strip()
         if not label:
             continue
-        dedup_key = f"{kind}:{label}"
+        display_tag = f"{kind}:{label}"
+        dedup_key = display_tag.lower()
         if dedup_key in seen:
             continue
         seen.add(dedup_key)
-        tags.append(dedup_key)
+        tags.append(display_tag)
     return tags
+
+
+def _build_glance_from_llm_fields(paper: Dict[str, Any]) -> str:
+    """复用 Step 4 已生成的中文 TLDR 与四栏速览，避免重复调用 LLM。"""
+    tldr = str(paper.get("llm_tldr_cn") or paper.get("tldr_cn") or "").strip()
+    motivation = str(paper.get("llm_motivation_cn") or paper.get("motivation_cn") or "").strip()
+    method = str(paper.get("llm_method_cn") or paper.get("method_cn") or "").strip()
+    result = str(paper.get("llm_result_cn") or paper.get("result_cn") or "").strip()
+    conclusion = str(paper.get("llm_conclusion_cn") or paper.get("conclusion_cn") or "").strip()
+    fields = (tldr, motivation, method, result, conclusion)
+    if not all(fields):
+        return ""
+    if any(value in {"不相关", "not relevant"} for value in fields):
+        return ""
+    return (
+        f"**TLDR**：{tldr} \\\n"
+        f"**Motivation**：{motivation} \\\n"
+        f"**Method**：{method} \\\n"
+        f"**Result**：{result} \\\n"
+        f"**Conclusion**：{conclusion}"
+    )
+
+
+def _is_safe_custom_route(route: str) -> bool:
+    if not isinstance(route, str) or not route or ".." in route or "\\" in route:
+        return False
+    return bool(
+        re.fullmatch(
+            r"(?:\d{8}-\d{8}(?:-[A-Za-z0-9._-]+)?|\d{6}/\d{2}|conference/[a-z0-9-]+)"
+            r"/[A-Za-z0-9][A-Za-z0-9._-]{0,240}",
+            route,
+        )
+    )
+
+
+def ensure_reading_content(paper, section, md_path, txt_path, client, *, require_complete=False, force_glance=False):
+    """日常与回溯共用的现代元数据页补齐：保留正文，逐阶段保存，只生成缺失内容。"""
+    with open(md_path, encoding='utf-8') as handle:
+        text = handle.read()
+    meta = _parse_front_matter(text)
+
+    def persist():
+        nonlocal meta
+        with tempfile.NamedTemporaryFile('w', dir=os.path.dirname(md_path), encoding='utf-8', delete=False) as handle:
+            handle.write(text)
+            temporary = handle.name
+        os.replace(temporary, md_path)
+        meta = _parse_front_matter(text)
+
+    def field(key, value):
+        nonlocal text
+        text, _ = upsert_front_matter_field(text, key, yaml_escape_value(str(value)))
+
+    if not meta.get('title_zh') or '## 摘要' not in text:
+        pre_title_zh = str(paper.get('llm_title_zh') or paper.get('title_zh') or '').strip()
+        if pre_title_zh and not meta.get('title_zh'):
+            field('title_zh', pre_title_zh)
+            persist()
+        if not meta.get('title_zh') or '## 摘要' not in text:
+            title_zh, abstract_zh = translate_title_and_abstract_to_zh(
+                paper.get('title', ''), paper.get('abstract', ''), client=client)
+            if title_zh and not meta.get('title_zh'):
+                field('title_zh', title_zh)
+            if abstract_zh and '## 摘要' not in text:
+                position = text.find('## Abstract')
+                block = f'## 摘要\n{abstract_zh}\n\n'
+                text = text[:position] + block + text[position:] if position >= 0 else text.rstrip() + '\n\n' + block
+            persist()
+
+    keys = ('tldr', 'motivation', 'method', 'result', 'conclusion')
+    needs_evidence = paper.get('selection_source') == 'long-range' and not meta.get('reading_content_version')
+    if force_glance or needs_evidence or any(not meta.get(key) for key in keys):
+        prefilled_glance = "" if (force_glance or needs_evidence) else _build_glance_from_llm_fields(paper)
+        overview = prefilled_glance or generate_glance_overview(
+            paper.get('title', ''), paper.get('abstract', ''), client=client,
+            sidebar_context=paper.get('llm_tags', []) if needs_evidence else None)
+        parsed = {}
+        for line in (overview or '').splitlines():
+            match = re.match(r'^\*\*(TLDR|Motivation|Method|Result|Conclusion|Evidence)\*\*[：:]\s*(.*)', line)
+            if match:
+                parsed[match[1].lower()] = match[2].rstrip(' \\').strip()
+        for key in keys:
+            if parsed.get(key) and (force_glance or not meta.get(key)):
+                field(key, parsed[key])
+        if needs_evidence and parsed.get('evidence'):
+            field('evidence', parsed['evidence'])
+            field('reading_content_version', '1')
+        persist()
+    missing = [key for key in ('title_zh',) + keys if not meta.get(key)]
+    if '## 摘要' not in text:
+        missing.append('abstract_zh')
+    if needs_evidence and not meta.get('reading_content_version'):
+        missing.append('sidebar_evidence')
+    if missing and require_complete:
+        raise RuntimeError('论文内容未生成完整：' + ', '.join(missing))
+
+    pdf_url = str(paper.get('pdf_url') or paper.get('link') or meta.get('pdf') or '').strip()
+    effective_section = section
+    if effective_section == 'deep' and not extract_section_tail(text, '论文详细总结（自动生成）'):
+        fulltext_ok = False
+        try:
+            ensure_text_content(pdf_url, txt_path)
+            fulltext_ok = True
+        except (PaperFulltextUnavailable, requests.RequestException, ValueError) as exc:
+            if require_complete:
+                raise
+            log(f"[WARN] 全文获取失败，降级速读（保留中文摘要与速览）：{os.path.basename(md_path)}: {exc}")
+            effective_section = 'quick'
+        if fulltext_ok:
+            summary = generate_deep_summary(md_path, txt_path, client=client)
+            if not summary or '（完）' not in summary:
+                if require_complete:
+                    raise RuntimeError('论文精读总结未完整生成')
+            if summary:
+                upsert_auto_block(md_path, '论文详细总结（自动生成）', summary)
+                with open(md_path, encoding='utf-8') as handle:
+                    text = handle.read()
+    elif pdf_url and not os.path.exists(txt_path):
+        try:
+            ensure_text_content(pdf_url, txt_path)
+        except Exception as exc:
+            log(f"[WARN] 速读全文补齐跳过：{os.path.basename(md_path)}: {exc}")
+    field('reading_section', effective_section)
+    persist()
+    paper['canonical_evidence'] = meta.get('evidence') or paper.get('canonical_evidence', '')
+    return meta
 
 
 def process_paper(
@@ -1445,13 +1937,23 @@ def process_paper(
     docs_dir: str,
     glance_only: bool = False,
     force_glance: bool = False,
+    route: str | None = None,
+    require_complete: bool = False,
 ) -> Tuple[str, str]:
     title = (paper.get("title") or "").strip()
     arxiv_id = str(paper.get("id") or paper.get("paper_id") or "").strip()
     md_path, txt_path, paper_id = prepare_paper_paths(docs_dir, date_str, title, arxiv_id)
+    if route is not None:
+        if not _is_safe_custom_route(route):
+            raise ValueError('无效论文阅读路由')
+        paper_id = route
+        md_path = os.path.join(docs_dir, route + '.md')
+        txt_path = os.path.join(docs_dir, route + '.txt')
     abstract_en = (paper.get("abstract") or "").strip()
     pdf_url = str(paper.get("pdf_url") or paper.get("link") or "").strip()
     paper_llm_client = create_llm_client()
+    if paper_llm_client is not None and paper.get('selection_source') == 'long-range':
+        paper_llm_client.kwargs['thinking'] = {'type': 'disabled'}
 
     glance = ""
 
@@ -1473,7 +1975,7 @@ def process_paper(
         existing_meta = _parse_front_matter(existing)
         has_figures_json = bool(str(existing_meta.get("figures_json") or "").strip()) if existing_meta else False
         has_tables_json = bool(str(existing_meta.get("tables_json") or "").strip()) if existing_meta else False
-        if not has_figures_json or not has_tables_json:
+        if (not has_figures_json or not has_tables_json) and not existing_meta.get('paper_media_checked'):
             figures, tables = maybe_generate_paper_media(
                 paper,
                 docs_dir=docs_dir,
@@ -1502,6 +2004,14 @@ def process_paper(
                     with open(md_path, "w", encoding="utf-8") as f:
                         f.write(updated + ("\n" if not updated.endswith("\n") else ""))
                     existing = updated
+
+        if existing_meta:
+            existing, _ = upsert_front_matter_field(existing, 'paper_media_checked', 'true')
+            with open(md_path, 'w', encoding='utf-8') as handle:
+                handle.write(existing)
+            ensure_reading_content(paper, 'quick' if glance_only else section, md_path, txt_path,
+                                   paper_llm_client, require_complete=require_complete, force_glance=force_glance)
+            return paper_id, title
 
         # 修复模式：若自动总结/速览存在“被截断”的迹象，则仅重生成该段落，不改动前面正文
         # 若已存在 Markdown，但缺少中文标题/中文摘要，则在“重新跑 Step6”时自动补齐
@@ -1666,7 +2176,15 @@ def process_paper(
 
     # 新文件：生成完整内容
     pdf_url = str(paper.get("pdf_url") or paper.get("link") or "").strip()
-    ensure_text_content(pdf_url, txt_path)
+    fulltext_ok = False
+    if pdf_url:
+        try:
+            ensure_text_content(pdf_url, txt_path)
+            fulltext_ok = True
+        except (PaperFulltextUnavailable, requests.RequestException, ValueError) as exc:
+            if require_complete:
+                raise
+            log(f"[WARN] 全文获取失败，仍生成中文摘要与速览：{paper_id}: {exc}")
     figures, tables = maybe_generate_paper_media(
         paper,
         docs_dir=docs_dir,
@@ -1679,18 +2197,22 @@ def process_paper(
         paper["_table_assets"] = tables
 
     zh_title, zh_abstract = translate_title_and_abstract_to_zh(title, abstract_en, client=paper_llm_client)
+    if not zh_title:
+        zh_title = str(paper.get("llm_title_zh") or paper.get("title_zh") or "").strip()
     tags_list = build_tags_list(section, paper.get("llm_tags") or [])
-    glance = generate_glance_overview(title, abstract_en, client=paper_llm_client) or build_glance_fallback(paper)
+    prefilled_glance = "" if force_glance else _build_glance_from_llm_fields(paper)
+    glance = prefilled_glance or generate_glance_overview(title, abstract_en, client=paper_llm_client) or build_glance_fallback(paper)
     if glance:
         paper["_glance_overview"] = glance
-    content = build_markdown_content(paper, section, zh_title, zh_abstract, tags_list)
+    effective_section = section if (section != "deep" or fulltext_ok) else "quick"
+    content = build_markdown_content(paper, effective_section, zh_title, zh_abstract, tags_list)
 
     os.makedirs(os.path.dirname(md_path), exist_ok=True)
     with open(md_path, "w", encoding="utf-8") as f:
         f.write(content)
 
     # 精读区：生成详细总结
-    if section == "deep":
+    if effective_section == "deep":
         summary = generate_deep_summary(md_path, txt_path, client=paper_llm_client)
         if summary:
             upsert_auto_block(md_path, "论文详细总结（自动生成）", summary)
@@ -1734,6 +2256,9 @@ def update_sidebar(
     quick_entries: List[Tuple[str, str, List[Tuple[str, str]]]],
     paper_evidence_by_id: Dict[str, str],
     date_label: str | None = None,
+    replace_existing: bool = False,
+    topic_meta: Dict[str, Any] | None = None,
+    paper_meta_by_id: Dict[str, Dict[str, Any]] | None = None,
 ) -> None:
     def build_sidebar_item_payload(
         paper_id: str,
@@ -1757,14 +2282,29 @@ def update_sidebar(
                 continue
             clean_tags.append({"kind": safe_kind, "label": safe_label})
 
+        extra_meta = (paper_meta_by_id or {}).get(str(paper_id).strip()) or {}
         arxiv_id = str(paper_id or "").strip().split("/")[-1]
-        paper_link = f"https://arxiv.org/abs/{arxiv_id}" if arxiv_id else route_href
-        payload = {
+        paper_link = (
+            str(extra_meta.get("link") or "").strip()
+            or (f"https://arxiv.org/abs/{arxiv_id}" if arxiv_id else route_href)
+        )
+        payload: Dict[str, Any] = {
             "title": (title or "").strip() or paper_id,
             "link": paper_link,
             "score": score_text,
             "tags": clean_tags,
         }
+        for meta_key in (
+            "published",
+            "publication_date",
+            "publication_date_precision",
+            "publication_date_source",
+            "publication_date_kind",
+            "conference_year",
+        ):
+            val = str(extra_meta.get(meta_key) or "").strip()
+            if val:
+                payload[meta_key] = val
         safe_evidence = str(evidence or "").strip()
         if safe_evidence:
             payload["evidence"] = safe_evidence
@@ -1773,7 +2313,11 @@ def update_sidebar(
     effective_label = (date_label or "").strip() or format_date_str(date_str)
     # 用隐藏 marker 做稳定定位，避免“展示标题”变更导致无法覆盖更新
     marker = f"<!--dpr-date:{date_str}-->"
-    day_heading = f"  * {effective_label} {marker}\n"
+    topic_comment = ""
+    if isinstance(topic_meta, dict) and topic_meta:
+        safe_topic_json = json.dumps(topic_meta, ensure_ascii=False, separators=(",", ":")).replace("-->", "--&gt;")
+        topic_comment = f" <!--dpr-topic:{safe_topic_json}-->"
+    day_heading = f"  * {effective_label} {marker}{topic_comment}\n"
     legacy_day_heading = f"  * {format_date_str(date_str)}\n"
 
     lines: List[str] = []
@@ -1811,7 +2355,7 @@ def update_sidebar(
     if day_idx != -1:
         end = day_idx + 1
         while end < len(lines):
-            if lines[end].startswith("  * ") and not lines[end].startswith("    * "):
+            if lines[end].startswith("* ") or (lines[end].startswith("  * ") and not lines[end].startswith("    * ")):
                 break
             end += 1
         existing_deep_lines, existing_quick_lines = _extract_day_block_papers(
@@ -1824,11 +2368,15 @@ def update_sidebar(
         new_hrefs.add(f"#/{pid}")
     for pid, _, _ in quick_entries:
         new_hrefs.add(f"#/{pid}")
-    extra_deep = [
-        l for l in existing_deep_lines if _extract_paper_href(l) not in new_hrefs
+    extra_deep = [] if replace_existing else [
+        line
+        for line in existing_deep_lines
+        if _extract_paper_href(line) not in new_hrefs
     ]
-    extra_quick = [
-        l for l in existing_quick_lines if _extract_paper_href(l) not in new_hrefs
+    extra_quick = [] if replace_existing else [
+        line
+        for line in existing_quick_lines
+        if _extract_paper_href(line) not in new_hrefs
     ]
 
     block: List[str] = [day_heading]
@@ -1881,24 +2429,33 @@ def build_day_report_markdown(
     deep_entries: List[Tuple[str, str, List[Tuple[str, str]]]],
     quick_entries: List[Tuple[str, str, List[Tuple[str, str]]]],
     recommend_exists: bool,
+    run_count: int = 1,
+    generated_at: str | None = None,
+    summary: str | None = None,
 ) -> str:
     effective_label = (date_label or "").strip() or format_date_str(date_str)
-    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    effective_generated_at = (
+        str(generated_at or "").strip()
+        or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    )
+    run_count = max(1, int(run_count or 1))
     total = len(deep_entries) + len(quick_entries)
     run_status = "成功" if recommend_exists else "未产出 recommend 文件（视为无结果）"
-    summary = build_daily_brief_summary(
-        date_label=effective_label,
-        deep_entries=deep_entries,
-        quick_entries=quick_entries,
-        total_count=total,
-        run_status=run_status,
-    )
+    if summary is None:
+        summary = build_daily_brief_summary(
+            date_label=effective_label,
+            deep_entries=deep_entries,
+            quick_entries=quick_entries,
+            total_count=total,
+            run_status=run_status,
+        )
 
     lines: List[str] = []
     lines.append(f"# 日报 · {effective_label}")
     lines.append("")
-    lines.append(f"- 生成时间：{generated_at}")
-    lines.append(f"- 当次推荐总数：{total}")
+    lines.append(f"- 最近生成时间：{effective_generated_at}")
+    lines.append(f"- 今日累计更新：{run_count} 次")
+    lines.append(f"- 今日累计推荐总数：{total}")
     lines.append(f"- 精读区：{len(deep_entries)}")
     lines.append(f"- 速读区：{len(quick_entries)}")
     if summary:
@@ -1949,6 +2506,9 @@ def write_day_report_readme(
     deep_entries: List[Tuple[str, str, List[Tuple[str, str]]]],
     quick_entries: List[Tuple[str, str, List[Tuple[str, str]]]],
     recommend_exists: bool,
+    run_count: int = 1,
+    generated_at: str | None = None,
+    summary: str | None = None,
 ) -> str:
     day_dir, day_readme = prepare_day_report_paths(docs_dir, date_str)
     os.makedirs(day_dir, exist_ok=True)
@@ -1958,6 +2518,9 @@ def write_day_report_readme(
         deep_entries=deep_entries,
         quick_entries=quick_entries,
         recommend_exists=recommend_exists,
+        run_count=run_count,
+        generated_at=generated_at,
+        summary=summary,
     )
     with open(day_readme, "w", encoding="utf-8") as f:
         f.write(content)
@@ -1968,9 +2531,9 @@ def list_day_report_links(docs_dir: str) -> List[Tuple[str, str]]:
     out: List[Tuple[str, str]] = []
     if not os.path.isdir(docs_dir):
         return out
-    # 1) 区间目录：YYYYMMDD-YYYYMMDD
+    # 1) 区间目录：YYYYMMDD-YYYYMMDD 或带专题后缀的区间目录
     range_dirs = sorted(
-        [d for d in os.listdir(docs_dir) if RANGE_DATE_RE.fullmatch(d)],
+        [d for d in os.listdir(docs_dir) if TOPIC_RANGE_RE.fullmatch(d)],
         reverse=True,
     )
     for rd in range_dirs:
@@ -2006,8 +2569,11 @@ def build_home_readme_content(
     deep_entries: List[Tuple[str, str, List[Tuple[str, str]]]],
     quick_entries: List[Tuple[str, str, List[Tuple[str, str]]]],
     paper_evidence_by_id: Dict[str, str],
+    run_count: int = 1,
+    summary: str | None = None,
+    home_template_dir: str | None = None,
 ) -> str:
-    notice_path, promo_path = ensure_home_module_files(docs_dir)
+    notice_path, promo_path = ensure_home_module_files(docs_dir, home_template_dir)
     notice_md = _read_module_markdown(notice_path)
     promo_md = _read_module_markdown(promo_path)
     latest_report_md = build_latest_report_section(
@@ -2018,12 +2584,13 @@ def build_home_readme_content(
         deep_entries=deep_entries,
         quick_entries=quick_entries,
         paper_evidence_by_id=paper_evidence_by_id,
+        run_count=run_count,
+        summary=summary,
     )
 
     lines: List[str] = []
     lines.append(notice_md or "（公告模块为空）")
     lines.append("")
-    lines.append("## 每次日报")
     lines.append(latest_report_md)
     lines.append("")
     lines.append(promo_md or "（宣传模块为空）")
@@ -2040,6 +2607,9 @@ def sync_home_readme_from_day_report(
     deep_entries: List[Tuple[str, str, List[Tuple[str, str]]]],
     quick_entries: List[Tuple[str, str, List[Tuple[str, str]]]],
     paper_evidence_by_id: Dict[str, str],
+    run_count: int = 1,
+    summary: str | None = None,
+    home_template_dir: str | None = None,
 ) -> str:
     home_readme = os.path.join(docs_dir, "README.md")
     # 首页由三段模块拼接：公告栏（独立 md）+ 本次日报 + 宣传栏（独立 md）
@@ -2052,6 +2622,9 @@ def sync_home_readme_from_day_report(
         deep_entries=deep_entries,
         quick_entries=quick_entries,
         paper_evidence_by_id=paper_evidence_by_id,
+        run_count=run_count,
+        summary=summary,
+        home_template_dir=home_template_dir,
     )
     with open(home_readme, "w", encoding="utf-8") as f:
         f.write(content)
@@ -2071,6 +2644,7 @@ def write_run_daily_log(
     quick_count: int,
     docs_dir: str,
     day_readme: str,
+    run_count: int = 1,
 ) -> str:
     log_dir = os.path.join(ROOT_DIR, "archive", date_str, "logs")
     os.makedirs(log_dir, exist_ok=True)
@@ -2084,6 +2658,7 @@ def write_run_daily_log(
         "deep_count": int(deep_count),
         "quick_count": int(quick_count),
         "total_count": int(deep_count + quick_count),
+        "run_count": max(1, int(run_count or 1)),
         "docs_dir": docs_dir,
         "day_readme": day_readme,
     }
@@ -2419,11 +2994,13 @@ def write_day_meta_index_json(
     date_label: str | None,
     deep_list: List[Dict[str, Any]],
     quick_list: List[Dict[str, Any]],
+    merged_deep_entries: List[Tuple[str, str, List[Tuple[str, str]]]] | None = None,
+    merged_quick_entries: List[Tuple[str, str, List[Tuple[str, str]]]] | None = None,
 ) -> str:
     """
     在对应的 docs 日期目录下生成索引 JSON 文件，供前端一键下载。
     """
-    if RANGE_DATE_RE.match(date_str):
+    if TOPIC_RANGE_RE.match(date_str):
         target_dir = os.path.join(docs_dir, date_str)
     else:
         ym = date_str[:6]
@@ -2434,29 +3011,60 @@ def write_day_meta_index_json(
 
     effective_label = (date_label or "").strip() or format_date_str(date_str)
 
+    source_by_route: Dict[str, Dict[str, Any]] = {}
+    for source_papers in (deep_list, quick_list):
+        for paper in source_papers:
+            title = (paper.get("title") or "").strip()
+            source_id = str(paper.get("id") or paper.get("paper_id") or "").strip()
+            _, _, route = prepare_paper_paths(docs_dir, date_str, title, source_id)
+            source_by_route[route] = paper
+
     papers: List[Dict[str, Any]] = []
     errors: List[Dict[str, str]] = []
-    for section, lst in (("deep", deep_list), ("quick", quick_list)):
-        for paper in lst:
-            try:
-                title = (paper.get("title") or "").strip()
-                arxiv_id = str(paper.get("id") or paper.get("paper_id") or "").strip()
-                md_path, _, pid = prepare_paper_paths(docs_dir, date_str, title, arxiv_id)
-                item = _parse_generated_md_to_meta(
-                    md_path,
-                    pid,
-                    section,
-                    str(paper.get("selection_source") or ""),
-                    str(paper.get("abstract") or ""),
-                )
-                papers.append(item)
-            except Exception as e:
-                errors.append(
-                    {
-                        "paper_id": str(paper.get("id") or paper.get("paper_id") or ""),
-                        "error": str(e),
-                    }
-                )
+    if merged_deep_entries is not None or merged_quick_entries is not None:
+        cumulative_entries = (
+            ("deep", merged_deep_entries or []),
+            ("quick", merged_quick_entries or []),
+        )
+        for section, entries in cumulative_entries:
+            for route, title, _tags in entries:
+                source = source_by_route.get(route) or {}
+                md_path = os.path.join(docs_dir, f"{route}.md")
+                try:
+                    item = _parse_generated_md_to_meta(
+                        md_path,
+                        route,
+                        section,
+                        str(source.get("selection_source") or ""),
+                        str(source.get("abstract") or ""),
+                    )
+                    if not item.get("title_en"):
+                        item["title_en"] = (title or "").strip()
+                    papers.append(item)
+                except Exception as e:
+                    errors.append({"paper_id": route, "error": str(e)})
+    else:
+        for section, lst in (("deep", deep_list), ("quick", quick_list)):
+            for paper in lst:
+                try:
+                    title = (paper.get("title") or "").strip()
+                    arxiv_id = str(paper.get("id") or paper.get("paper_id") or "").strip()
+                    md_path, _, pid = prepare_paper_paths(docs_dir, date_str, title, arxiv_id)
+                    item = _parse_generated_md_to_meta(
+                        md_path,
+                        pid,
+                        section,
+                        str(paper.get("selection_source") or ""),
+                        str(paper.get("abstract") or ""),
+                    )
+                    papers.append(item)
+                except Exception as e:
+                    errors.append(
+                        {
+                            "paper_id": str(paper.get("id") or paper.get("paper_id") or ""),
+                            "error": str(e),
+                        }
+                    )
 
     payload = {
         "label": effective_label,
@@ -2648,12 +3256,25 @@ def main() -> None:
     deep_entries: List[Tuple[str, str, List[Tuple[str, str]]]] = []
     quick_entries: List[Tuple[str, str, List[Tuple[str, str]]]] = []
     docs_concurrency = max(1, int(args.docs_concurrency))
+    total_papers_to_generate = len(deep_list) + len(quick_list)
+    completed_papers_count = 0
+    try:
+        from workflow_status import WorkflowStatusReporter
+
+        docs_status_reporter = WorkflowStatusReporter(
+            workflow_key=os.getenv("DPR_WORKFLOW_KEY") or "daily-now",
+            workflow_file=os.getenv("DPR_WORKFLOW_FILE") or "daily-paper-reader.yml",
+            display_label=os.getenv("DPR_WORKFLOW_LABEL") or "每日论文",
+        )
+    except Exception:
+        docs_status_reporter = None
 
     def _process_section(
         section: str,
         papers: List[Dict[str, Any]],
         paper_evidence_by_id: Dict[str, str],
     ) -> List[Tuple[str, str, List[Tuple[str, str]]]]:
+        nonlocal completed_papers_count
         if not papers:
             return []
         max_workers = max(1, docs_concurrency)
@@ -2678,10 +3299,26 @@ def main() -> None:
                     pid, title = future.result()
                 except Exception as e:
                     log(f"[WARN] 生成{section}论文失败：{e}")
+                    completed_papers_count += 1
+                    if docs_status_reporter is not None and total_papers_to_generate > 0:
+                        docs_status_reporter.report(
+                            step_code="step6",
+                            step_label="Step 6 生成文档与图表",
+                            progress_current=completed_papers_count,
+                            progress_total=total_papers_to_generate,
+                        )
                     continue
                 paper_evidence_by_id[str((pid or "").strip())] = get_paper_sidebar_evidence(paper)
                 section_tags = extract_sidebar_tags(paper)
                 results.append((index, (pid, title, section_tags)))
+                completed_papers_count += 1
+                if docs_status_reporter is not None and total_papers_to_generate > 0:
+                    docs_status_reporter.report(
+                        step_code="step6",
+                        step_label="Step 6 生成文档与图表",
+                        progress_current=completed_papers_count,
+                        progress_total=total_papers_to_generate,
+                    )
 
         results.sort(key=lambda item: item[0])
         return [v for _, v in results]
@@ -2713,31 +3350,76 @@ def main() -> None:
         quick_entries = _process_section("quick", quick_list, sidebar_evidence_by_id)
         log_substep("6.3", "生成速读区文章", "END")
 
-    log_substep("6.4", "生成当日日报并同步首页 README", "START")
+    log_substep("6.4", "合并当日结果并同步日报与首页", "START")
     run_generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    sidebar_path = os.path.join(docs_dir, "_sidebar.md")
+    (
+        daily_state,
+        deep_entries,
+        quick_entries,
+        sidebar_evidence_by_id,
+        state_path,
+    ) = merge_daily_run_results(
+        docs_dir=docs_dir,
+        date_str=date_str,
+        date_label=args.sidebar_date_label or "",
+        generated_at=run_generated_at,
+        recommend_exists=recommend_exists,
+        deep_list=deep_list,
+        quick_list=quick_list,
+        deep_entries=deep_entries,
+        quick_entries=quick_entries,
+        evidence_by_route=sidebar_evidence_by_id,
+    )
+    merged_recommend_exists = bool(daily_state.get("recommend_exists")) or bool(
+        deep_entries or quick_entries
+    )
+    run_count = max(1, int(daily_state.get("run_count", 1) or 1))
+    merged_generated_at = str(daily_state.get("generated_at") or run_generated_at)
+    effective_label = (
+        str(daily_state.get("date_label") or "").strip()
+        or (args.sidebar_date_label or "").strip()
+        or format_date_str(date_str)
+    )
+    daily_summary = build_daily_brief_summary(
+        date_label=effective_label,
+        deep_entries=deep_entries,
+        quick_entries=quick_entries,
+        total_count=len(deep_entries) + len(quick_entries),
+        run_status="成功" if merged_recommend_exists else "未产出 recommend 文件（视为无结果）",
+    )
+
     day_readme = write_day_report_readme(
         docs_dir=docs_dir,
         date_str=date_str,
-        date_label=args.sidebar_date_label,
+        date_label=effective_label,
         deep_entries=deep_entries,
         quick_entries=quick_entries,
-        recommend_exists=recommend_exists,
+        recommend_exists=merged_recommend_exists,
+        run_count=run_count,
+        generated_at=merged_generated_at,
+        summary=daily_summary,
     )
     home_readme = sync_home_readme_from_day_report(
         docs_dir=docs_dir,
         date_str=date_str,
-        date_label=args.sidebar_date_label,
-        generated_at=run_generated_at,
-        recommend_exists=recommend_exists,
+        date_label=effective_label,
+        generated_at=merged_generated_at,
+        recommend_exists=merged_recommend_exists,
         deep_entries=deep_entries,
         quick_entries=quick_entries,
         paper_evidence_by_id=sidebar_evidence_by_id,
+        run_count=run_count,
+        summary=daily_summary,
+    )
+    log(
+        f"[OK] daily state merged: runs={run_count}, "
+        f"deep={len(deep_entries)}, quick={len(quick_entries)}, path={state_path}"
     )
     log(f"[OK] day report saved: {day_readme}")
     log(f"[OK] home README synced: {home_readme}")
-    log_substep("6.4", "生成当日日报并同步首页 README", "END")
+    log_substep("6.4", "合并当日结果并同步日报与首页", "END")
 
-    sidebar_path = os.path.join(docs_dir, "_sidebar.md")
     if deep_entries or quick_entries:
         log_substep("6.5", "更新侧边栏", "START")
         update_sidebar(
@@ -2746,7 +3428,8 @@ def main() -> None:
             deep_entries,
             quick_entries,
             sidebar_evidence_by_id,
-            date_label=args.sidebar_date_label,
+            date_label=effective_label,
+            replace_existing=True,
         )
         log_substep("6.5", "更新侧边栏", "END")
     else:
@@ -2758,9 +3441,11 @@ def main() -> None:
         out_path = write_day_meta_index_json(
             docs_dir,
             date_str,
-            args.sidebar_date_label,
+            effective_label,
             deep_list,
             quick_list,
+            merged_deep_entries=deep_entries,
+            merged_quick_entries=quick_entries,
         )
         log(f"[OK] meta index saved: {out_path}")
     except Exception as e:
@@ -2772,11 +3457,12 @@ def main() -> None:
         date_str=date_str,
         mode=mode,
         recommend_path=recommend_path,
-        recommend_exists=recommend_exists,
+        recommend_exists=merged_recommend_exists,
         deep_count=len(deep_entries),
         quick_count=len(quick_entries),
         docs_dir=docs_dir,
         day_readme=day_readme,
+        run_count=run_count,
     )
     log(f"[OK] daily report log saved: {run_log}")
     log_substep("6.7", "写入运行日志（日报）", "END")

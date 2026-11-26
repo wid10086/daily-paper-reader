@@ -533,13 +533,13 @@ def main() -> None:
         "--fetch-days",
         type=int,
         default=None,
-        help="Pass --days to Step1 (fetch arxiv). Default: use config.yaml/state logic.",
+        help="回溯1–365天；1–30天沿用日报流程，31天以上为arXiv专题回溯。",
     )
     parser.add_argument(
         "--fetch-mode",
         default="auto",
         choices=("auto", "standard", "skims"),
-        help="Force fetch-run mode: auto(按阈值), standard(非skims), skims(强制skims).",
+        help="1–30天：auto/standard/skims；31–365天固定使用独立arXiv专题回溯。",
     )
     parser.add_argument(
         "--profile-tag",
@@ -566,6 +566,8 @@ def main() -> None:
         help="强制执行 Step 1（全量数据拉取），即使 Supabase 已启用。",
     )
     args = parser.parse_args()
+    if args.fetch_days is not None and not 1 <= args.fetch_days <= 365:
+        parser.error('--fetch-days 必须在 1–365 天之间')
 
     python = sys.executable
 
@@ -581,6 +583,40 @@ def main() -> None:
     else:
         os.environ.pop("DPR_FILTER_PROFILE_TAG", None)
         os.environ.pop("DPR_INCLUDE_CONFERENCE_ONLY_PROFILES", None)
+    if args.fetch_days is not None and args.fetch_days > 30:
+        if args.skip_fetch is False:
+            parser.error('31–365天专题回溯只读取Supabase，不支持 --no-skip-fetch')
+        from subscription_plan import build_pipeline_inputs
+        from topic_research import run_research
+
+        full_config = _load_full_config()
+        plan_inputs = build_pipeline_inputs(full_config)
+        active_profiles = plan_inputs.get("profiles") or []
+        if not active_profiles:
+            raise RuntimeError("31–365天专题回溯需要至少一个已启用的词条")
+        end_exclusive = (
+            datetime.strptime(run_date_token[-8:], "%Y%m%d").date() + timedelta(days=1)
+        ).isoformat()
+        mode = str(args.fetch_days) if args.fetch_days in (90, 365) else "365"
+        publish = os.getenv("GITHUB_REPOSITORY", "").strip().lower() not in (
+            "",
+            "ziwenhahaha/daily-paper-reader",
+        )
+        print(
+            f"[INFO] 启用统一标准专题回溯流水线（Step 2→3→4→5→6）：days={args.fetch_days}, profiles={len(active_profiles)}",
+            flush=True,
+        )
+        for prof in active_profiles:
+            run_research(
+                full_config,
+                prof["tag"],
+                mode,
+                end_exclusive,
+                ROOT_DIR,
+                arxiv_days=args.fetch_days,
+                publish=publish,
+            )
+        return
     fetch_mode = (args.fetch_mode or "auto").strip().lower()
     if fetch_mode == "skims":
         use_skims_mode = True
@@ -620,7 +656,24 @@ def main() -> None:
         f"arxiv_papers_{run_date_token}.{recommend_mode}.json",
     )
 
+    from workflow_status import WorkflowStatusReporter
+
+    daily_label = "每日论文"
+    if args.fetch_days is not None and args.fetch_days != 10:
+        daily_label += f"（{args.fetch_days}天）"
+    if profile_tag:
+        daily_label += f" · {profile_tag}"
+    status_reporter = WorkflowStatusReporter(
+        workflow_key="daily-now",
+        workflow_file="daily-paper-reader.yml",
+        display_label=daily_label,
+    )
+    os.environ["DPR_WORKFLOW_KEY"] = "daily-now"
+    os.environ["DPR_WORKFLOW_FILE"] = "daily-paper-reader.yml"
+    os.environ["DPR_WORKFLOW_LABEL"] = daily_label
+
     if args.run_enrich:
+        status_reporter.report(step_code="step0", step_label="Step 0 扩充关键词", force=True)
         run_step(
             "Step 0 - enrich config",
             [python, os.path.join(SRC_DIR, "0.enrich_config_queries.py")],
@@ -641,6 +694,7 @@ def main() -> None:
             flush=True,
         )
     else:
+        status_reporter.report(step_code="step1", step_label="Step 1 抓取论文", force=True)
         run_step(
             "Step 1 - fetch arxiv",
             [
@@ -652,12 +706,14 @@ def main() -> None:
         )
     if trace_ids:
         print_trace_retrieval("RAW", raw_path, trace_ids)
+    status_reporter.report(step_code="step2.1", step_label="Step 2.1 BM25 关键词召回", force=True)
     run_step(
         "Step 2.1 - BM25",
         [python, os.path.join(SRC_DIR, "2.1.retrieval_papers_bm25.py")],
     )
     if trace_ids:
         print_trace_retrieval("BM25", bm25_path, trace_ids)
+    status_reporter.report(step_code="step2.2", step_label="Step 2.2 向量语义召回", force=True)
     run_step(
         "Step 2.2 - Embedding",
         [
@@ -671,24 +727,28 @@ def main() -> None:
     )
     if trace_ids:
         print_trace_retrieval("EMBEDDING", embedding_path, trace_ids)
+    status_reporter.report(step_code="step2.3", step_label="Step 2.3 RRF 融合", force=True)
     run_step(
         "Step 2.3 - RRF",
         [python, os.path.join(SRC_DIR, "2.3.retrieval_papers_rrf.py")],
     )
     if trace_ids:
         print_trace_retrieval("RRF", rrf_path, trace_ids)
+    status_reporter.report(step_code="step3", step_label="Step 3 云端重排", force=True)
     run_step(
         "Step 3 - Rerank",
         [python, os.path.join(SRC_DIR, "3.rank_papers.py")],
     )
     if trace_ids:
         print_trace_retrieval("RERANK", rerank_path, trace_ids)
+    status_reporter.report(step_code="step4", step_label="Step 4 DeepSeek 精排", force=True)
     run_step(
         "Step 4 - LLM refine",
         [python, os.path.join(SRC_DIR, "4.llm_refine_papers.py")],
     )
     if trace_ids:
         print_trace_llm("LLM", llm_path, trace_ids)
+    status_reporter.report(step_code="step5", step_label="Step 5 筛选精读与速读", force=True)
     run_step(
         "Step 5 - Select",
         [
@@ -699,6 +759,7 @@ def main() -> None:
     )
     if trace_ids:
         print_trace_recommend("RECOMMEND", recommend_path, trace_ids)
+    status_reporter.report(step_code="step6", step_label="Step 6 生成文档与图表", force=True)
     run_step(
         "Step 6 - Generate Docs",
         [

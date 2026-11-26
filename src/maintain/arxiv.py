@@ -14,7 +14,7 @@ def main() -> None:
     parser.add_argument("--fetch-days", type=str, default="")
     parser.add_argument("--chunk-days", type=int, default=7)
     parser.add_argument("--run-date", type=str, default=TODAY_STR)
-    parser.add_argument("--retention-days", type=int, default=45)
+    parser.add_argument("--retention-days", type=int, default=400)
     parser.add_argument("--raw-input", type=str, default="")
     parser.add_argument("--skip-cleanup", action="store_true")
     parser.add_argument("--skip-fetch", action="store_true")
@@ -26,8 +26,6 @@ def main() -> None:
 
     run_date = str(args.run_date or TODAY_STR).strip() or TODAY_STR
     os.environ["DPR_RUN_DATE"] = run_date
-    cleanup_backend(backend_key="arxiv", retention_days=args.retention_days, skip_cleanup=args.skip_cleanup)
-
     raw_path = str(args.raw_input or "").strip() or default_raw_path("arxiv_papers", run_date)
     if not os.path.isabs(raw_path):
         raw_path = os.path.abspath(raw_path)
@@ -56,6 +54,9 @@ def main() -> None:
     if str(args.embed_model or "").strip():
         init_cmd += ["--embed-model", str(args.embed_model).strip()]
     run_step("Maintain arXiv", init_cmd)
+    # 清理必须在同步成功之后执行：run_step 失败会抛异常，
+    # 从而避免「抓取失败/零结果时只删不补」把表逐日削空。
+    cleanup_backend(backend_key="arxiv", retention_days=args.retention_days, skip_cleanup=args.skip_cleanup)
 
 
 if __name__ == "__main__":

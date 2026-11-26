@@ -1545,16 +1545,16 @@ window.$docsify = {
 
       // 侧边栏/正文的论文页标题条：英文右侧，中文左侧，中间竖线
       const isPaperRouteFile = (file) => {
-        const f = String(file || '');
+        const f = String(file || '').replace(/^\/+/, '').replace(/^docs\//i, '');
         return (
-          /^(?:\d{6}\/\d{2}|\d{8}-\d{8})\/(?!README\.md$).+\.md$/i.test(f) ||
+          /^(?:\d{6}\/\d{2}|\d{8}-\d{8}(?:-[A-Za-z0-9._-]+)?)\/(?!(?:README|papers|catalog)\.md$).+\.md$/i.test(f) ||
           /^conference\/[^/]+\/(?!README\.md$).+\.md$/i.test(f)
         );
       };
 
       const isReportRouteFile = (file) => {
-        const f = String(file || '');
-        return /^(?:\d{6}\/\d{2}|\d{8}-\d{8})\/README\.md$/i.test(f);
+        const f = String(file || '').replace(/^\/+/, '').replace(/^docs\//i, '');
+        return /^(?:\d{6}\/\d{2}|\d{8}-\d{8}(?:-[A-Za-z0-9._-]+)?)\/(?:README|papers)\.md$/i.test(f);
       };
 
       const fitTextToBox = (el, minPx, maxPx) => {
@@ -1609,6 +1609,264 @@ window.$docsify = {
         body.classList.toggle('dpr-report-page', !!isReportPage);
         body.classList.toggle('dpr-landing-page', !!(isHomePage || isReportPage));
         body.classList.toggle('dpr-paper-page', !!isPaperPage);
+      };
+
+      const enhanceDailyReportLayout = ({ isHomePage = false, isReportPage = false } = {}) => {
+        if (!isHomePage && !isReportPage) return;
+        const section = document.querySelector('.markdown-section');
+        if (!section) return;
+        if (section.querySelector('.dpr-day-report-hero')) return;
+
+        const parseMetaList = (ul) => {
+          const info = {};
+          if (!ul || ul.tagName !== 'UL') return info;
+          Array.from(ul.children).forEach((li) => {
+            const text = (li.textContent || '').trim();
+            const m = text.match(/^([^：:]+)[：:]\s*(.+)$/);
+            if (m) info[m[1].trim()] = m[2].trim();
+          });
+          return info;
+        };
+
+        const createHeroCard = ({ title, dateBadge, updatedAt, statusText, kpis }) => {
+          const hero = document.createElement('section');
+          hero.className = 'dpr-day-report-hero';
+
+          const top = document.createElement('div');
+          top.className = 'dpr-day-report-hero-top';
+
+          const titleWrap = document.createElement('div');
+          titleWrap.className = 'dpr-day-report-hero-title-wrap';
+          const h = document.createElement('h1');
+          h.className = 'dpr-day-report-hero-title';
+          h.textContent = title;
+          titleWrap.appendChild(h);
+          if (dateBadge) {
+            const badge = document.createElement('span');
+            badge.className = 'dpr-day-report-date-badge';
+            badge.textContent = dateBadge;
+            titleWrap.appendChild(badge);
+          }
+          top.appendChild(titleWrap);
+
+          if (updatedAt || statusText) {
+            const meta = document.createElement('div');
+            meta.className = 'dpr-day-report-hero-meta';
+            if (updatedAt) {
+              const t = document.createElement('span');
+              t.textContent = '更新于 ' + updatedAt;
+              meta.appendChild(t);
+            }
+            if (statusText) {
+              const pill = document.createElement('span');
+              pill.className = 'dpr-day-report-status-pill';
+              pill.textContent = statusText;
+              meta.appendChild(pill);
+            }
+            top.appendChild(meta);
+          }
+          hero.appendChild(top);
+
+          if (kpis && kpis.length) {
+            const grid = document.createElement('div');
+            grid.className = 'dpr-day-report-kpis';
+            kpis.forEach((item) => {
+              const box = document.createElement('div');
+              box.className = 'dpr-day-report-kpi' + (item.tone ? ' ' + item.tone : '');
+              const lbl = document.createElement('span');
+              lbl.className = 'dpr-day-report-kpi-label';
+              lbl.textContent = item.label;
+              const val = document.createElement('strong');
+              val.className = 'dpr-day-report-kpi-value';
+              val.textContent = item.value;
+              box.appendChild(lbl);
+              box.appendChild(val);
+              grid.appendChild(box);
+            });
+            hero.appendChild(grid);
+          }
+          return hero;
+        };
+
+        const upgradeBriefHeading = (heading) => {
+          if (!heading) return;
+          const card = document.createElement('section');
+          card.className = 'dpr-day-report-brief';
+          const head = document.createElement('div');
+          head.className = 'dpr-day-report-brief-head';
+          const badge = document.createElement('span');
+          badge.className = 'dpr-day-report-brief-badge';
+          badge.textContent = 'AI 今日简报';
+          head.appendChild(badge);
+          card.appendChild(head);
+
+          const body = document.createElement('div');
+          body.className = 'dpr-day-report-brief-body';
+          const toRemove = [];
+          let cur = heading.nextElementSibling;
+          while (cur && !/^H[1-6]$/.test(cur.tagName) && cur.tagName !== 'HR' && !cur.classList.contains('dpr-home-promo-card')) {
+            if (cur.tagName === 'BLOCKQUOTE' || cur.tagName === 'P') {
+              const ps = cur.tagName === 'BLOCKQUOTE' ? Array.from(cur.querySelectorAll('p')) : [cur];
+              const sources = ps.length ? ps : [cur];
+              sources.forEach((pEl) => {
+                // 保留 Markdown 软换行（<br>）形成的逐条简报分段
+                const segments = (pEl.innerHTML || '').split(/<br\s*\/?>/i);
+                segments.forEach((seg) => {
+                  const tmp = document.createElement('div');
+                  tmp.innerHTML = seg;
+                  const text = (tmp.textContent || '').trim();
+                  if (!text) return;
+                  const p = document.createElement('p');
+                  p.textContent = text;
+                  body.appendChild(p);
+                });
+              });
+              toRemove.push(cur);
+            } else if (cur.tagName === 'UL' && cur.children.length === 1 && /详情[：:]/.test(cur.textContent || '')) {
+              const a = cur.querySelector('a[href]');
+              if (a) {
+                const link = document.createElement('a');
+                link.className = 'dpr-day-report-brief-link';
+                link.href = a.getAttribute('href') || '';
+                link.textContent = '查看完整日报 ›';
+                head.appendChild(link);
+              }
+              toRemove.push(cur);
+            } else {
+              break;
+            }
+            cur = cur.nextElementSibling;
+          }
+          if (body.children.length) {
+            card.appendChild(body);
+            heading.parentNode.insertBefore(card, heading);
+            heading.remove();
+            toRemove.forEach((node) => node.remove());
+          }
+        };
+
+        const upgradePaperListUnderHeading = (heading) => {
+          if (!heading) return;
+          const next = heading.nextElementSibling;
+          if (!next) return;
+          if (next.tagName === 'UL' && next.children.length === 1 && !next.querySelector('a')) {
+            const empty = document.createElement('div');
+            empty.className = 'dpr-day-report-empty';
+            empty.textContent = (next.textContent || '').trim();
+            next.replaceWith(empty);
+            return;
+          }
+          if (next.tagName !== 'OL') return;
+          const list = document.createElement('ol');
+          list.className = 'dpr-day-report-list';
+          Array.from(next.children).forEach((li, idx) => {
+            const a = li.querySelector('a[href]');
+            if (!a) return;
+            const fullText = (li.textContent || '').trim();
+            const scoreMatch = fullText.match(/[（(]\s*(\d+(?:\.\d+)?\s*\/\s*10)\s*[）)]/);
+            const row = document.createElement('li');
+            row.className = 'dpr-day-report-item';
+
+            const num = document.createElement('span');
+            num.className = 'dpr-day-report-item-index';
+            num.textContent = String(idx + 1).padStart(2, '0');
+            row.appendChild(num);
+
+            const link = document.createElement('a');
+            link.className = 'dpr-day-report-item-link';
+            link.href = a.getAttribute('href') || '';
+            link.textContent = (a.textContent || '').trim();
+            row.appendChild(link);
+
+            if (scoreMatch) {
+              const score = document.createElement('span');
+              score.className = 'dpr-day-report-item-score';
+              score.textContent = scoreMatch[1].replace(/\s+/g, ' ');
+              row.appendChild(score);
+            }
+
+            const chev = document.createElement('span');
+            chev.className = 'dpr-day-report-item-chevron';
+            chev.setAttribute('aria-hidden', 'true');
+            chev.textContent = '›';
+            row.appendChild(chev);
+            list.appendChild(row);
+          });
+          if (list.children.length) next.replaceWith(list);
+        };
+
+        // 1. 每日日报详情页（# 日报 · YYYY-MM-DD）
+        if (isReportPage) {
+          const h1 = section.querySelector('h1');
+          const h1Text = h1 ? (h1.textContent || '').trim() : '';
+          const m = h1Text.match(/^日报\s*[·・]\s*(.+)$/);
+          if (!m) return;
+          const dateLabel = m[1].trim();
+          const metaUl = h1.nextElementSibling && h1.nextElementSibling.tagName === 'UL' ? h1.nextElementSibling : null;
+          const info = parseMetaList(metaUl);
+          const kpis = [];
+          const totalVal = info['今日累计推荐总数'] || info['论文数量'];
+          if (totalVal != null) kpis.push({ label: '推荐总数', value: totalVal + ' 篇', tone: 'is-total' });
+          if (info['精读区'] != null) kpis.push({ label: '精读区', value: info['精读区'] + ' 篇', tone: 'is-deep' });
+          if (info['速读区'] != null) kpis.push({ label: '速读区', value: info['速读区'] + ' 篇', tone: 'is-quick' });
+          if (info['今日累计更新']) kpis.push({ label: '今日更新', value: info['今日累计更新'], tone: 'is-runs' });
+
+          const hero = createHeroCard({
+            title: '每日论文日报',
+            dateBadge: dateLabel,
+            updatedAt: info['最近生成时间'] || '',
+            statusText: '',
+            kpis,
+          });
+          h1.parentNode.insertBefore(hero, h1);
+          h1.remove();
+          if (metaUl) metaUl.remove();
+
+          Array.from(section.querySelectorAll('h2')).forEach((h2) => {
+            const t = (h2.textContent || '').trim();
+            if (/^今日简报/.test(t)) upgradeBriefHeading(h2);
+            else if (/^(?:精读区|速读区|论文列表)/.test(t)) upgradePaperListUnderHeading(h2);
+          });
+
+          const lastP = Array.from(section.querySelectorAll('p')).pop();
+          if (lastP && /使用键盘方向键/.test(lastP.textContent || '')) {
+            const prevHr = lastP.previousElementSibling;
+            if (prevHr && prevHr.tagName === 'HR') prevHr.remove();
+            lastP.classList.add('dpr-day-report-footer-hint');
+          }
+          return;
+        }
+
+        // 2. 兼容旧版首页（含 ## 每次日报 且尚未升级 2×2 仪表盘）
+        if (isHomePage && !section.querySelector('.dpr-home-dashboard-grid')) {
+          const reportH2 = Array.from(section.querySelectorAll('h2')).find(
+            (el) => (el.textContent || '').trim() === '每次日报',
+          );
+          if (!reportH2) return;
+          const metaUl = reportH2.nextElementSibling && reportH2.nextElementSibling.tagName === 'UL' ? reportH2.nextElementSibling : null;
+          const info = parseMetaList(metaUl);
+          const kpis = [];
+          if (info['本次总论文数'] != null) kpis.push({ label: '本次推荐', value: info['本次总论文数'] + ' 篇', tone: 'is-total' });
+          if (info['精读区'] != null) kpis.push({ label: '精读区', value: info['精读区'] + ' 篇', tone: 'is-deep' });
+          if (info['速读区'] != null) kpis.push({ label: '速读区', value: info['速读区'] + ' 篇', tone: 'is-quick' });
+
+          const hero = createHeroCard({
+            title: '每次日报',
+            dateBadge: info['最新运行日期'] || '',
+            updatedAt: info['运行时间'] || '',
+            statusText: info['运行状态'] || '',
+            kpis,
+          });
+          reportH2.parentNode.insertBefore(hero, reportH2);
+          reportH2.remove();
+          if (metaUl) metaUl.remove();
+
+          Array.from(section.querySelectorAll('h3')).forEach((h3) => {
+            const t = (h3.textContent || '').trim();
+            if (/^今日简报/.test(t)) upgradeBriefHeading(h3);
+            else if (/论文标签$/.test(t)) upgradePaperListUnderHeading(h3);
+          });
+        }
       };
 
       const applyPaperTitleBar = () => {
@@ -1779,25 +2037,25 @@ window.$docsify = {
         const h = normalizeHref(href);
         // 匹配论文页：
         // - 传统路径：#/YYYYMM/DD/slug
-        // - 区间路径：#/YYYYMMDD-YYYYMMDD/slug
+        // - 区间/专题研究路径：#/YYYYMMDD-YYYYMMDD/slug 或 #/YYYYMMDD-YYYYMMDD-<mode>-<tag>/slug
         // - 会议路径：#/conference/<conference-year>/slug
         return (
-          /^#\/(?:\d{6}\/\d{2}|\d{8}-\d{8})\/(?!README$).+/i.test(h) ||
+          /^#\/(?:\d{6}\/\d{2}|\d{8}-\d{8}(?:-[A-Za-z0-9._-]+)?)\/(?!(?:README|papers|catalog)$).+/i.test(h) ||
           /^#\/conference\/[^/]+\/(?!README$).+/i.test(h)
         );
       };
 
       const isReportHref = (href) => {
         const h = normalizeHref(href);
-        // 匹配日报页：
+        // 匹配日报页 / 专题研究导读与清单页：
         // - 传统路径：#/YYYYMM/DD/README
-        // - 区间路径：#/YYYYMMDD-YYYYMMDD/README
-        return /^#\/(?:\d{6}\/\d{2}|\d{8}-\d{8})\/README$/i.test(h);
+        // - 区间/专题研究路径：#/YYYYMMDD-YYYYMMDD/README 或 #/YYYYMMDD-YYYYMMDD-<mode>-<tag>/(README|papers)
+        return /^#\/(?:\d{6}\/\d{2}|\d{8}-\d{8}(?:-[A-Za-z0-9._-]+)?)\/(?:README|papers)$/i.test(h);
       };
 
       const isPaperHrefFallback = (href) => {
         const h = normalizeHref(href);
-        return h.startsWith('#/') && h.includes('/') && !/\/README$/i.test(h);
+        return h.startsWith('#/') && h.includes('/') && !/\/(?:README|papers|catalog)$/i.test(h);
       };
 
       const collectPaperHrefsFromSidebar = () => {
@@ -2791,6 +3049,7 @@ window.$docsify = {
       };
 
       const closePdfPreview = () => {
+        pdfPreviewRenderSeq += 1;
         document.body.classList.remove('dpr-pdf-preview-open');
         document.querySelectorAll('[data-pdf-preview-toggle]').forEach((btn) => {
           btn.setAttribute('aria-expanded', 'false');
@@ -2798,17 +3057,205 @@ window.$docsify = {
         });
       };
 
-      const buildEmbeddablePdfUrl = (url) => {
+      const PDFJS_VIEWER_URL = 'https://mozilla.github.io/pdf.js/web/viewer.html';
+      const PDFJS_SCRIPT_URL = 'app/vendor/pdfjs/3.11.174/pdf.min.js';
+      const PDFJS_WORKER_URL = 'app/vendor/pdfjs/3.11.174/pdf.worker.min.js';
+      const PDF_PREVIEW_MAX_VIEWPORT_SCALE = 1.55;
+      const PDF_PREVIEW_MIN_OUTPUT_SCALE = 2;
+      const PDF_PREVIEW_TARGET_TOTAL_PIXELS = 40000000;
+      let pdfJsLoadPromise = null;
+      let pdfPreviewRenderSeq = 0;
+
+      const resolvePdfCanvasMetrics = (
+        baseWidth,
+        baseHeight,
+        stageWidth,
+        devicePixelRatio,
+        pageCount,
+      ) => {
+        const parsedBaseWidth = Number(baseWidth);
+        const parsedBaseHeight = Number(baseHeight);
+        const parsedStageWidth = Number(stageWidth);
+        const parsedPageCount = Number(pageCount);
+        const safeBaseWidth =
+          Number.isFinite(parsedBaseWidth) && parsedBaseWidth > 0 ? parsedBaseWidth : 1;
+        const safeBaseHeight =
+          Number.isFinite(parsedBaseHeight) && parsedBaseHeight > 0 ? parsedBaseHeight : 1;
+        const safeStageWidth =
+          Number.isFinite(parsedStageWidth) && parsedStageWidth > 0 ? parsedStageWidth : 1;
+        const safePageCount =
+          Number.isFinite(parsedPageCount) && parsedPageCount > 0
+            ? Math.max(1, Math.floor(parsedPageCount))
+            : 1;
+        const availableWidth = Math.max(1, safeStageWidth - 18);
+        const nativeOutputScale = Number(devicePixelRatio);
+        const scale = Math.min(
+          PDF_PREVIEW_MAX_VIEWPORT_SCALE,
+          availableWidth / safeBaseWidth,
+        );
+        const desiredOutputScale = Math.max(
+          PDF_PREVIEW_MIN_OUTPUT_SCALE,
+          Number.isFinite(nativeOutputScale) && nativeOutputScale > 0 ? nativeOutputScale : 1,
+        );
+        const estimatedDocumentPixels =
+          safeBaseWidth * scale * safeBaseHeight * scale * safePageCount;
+        const budgetOutputScale = Math.sqrt(
+          PDF_PREVIEW_TARGET_TOTAL_PIXELS / estimatedDocumentPixels,
+        );
+        return {
+          scale,
+          outputScale: Math.max(1, Math.min(desiredOutputScale, budgetOutputScale)),
+        };
+      };
+
+      const normalizePdfUrl = (url) => {
         const raw = String(url || '').trim();
         if (!raw) return '';
         try {
           const parsed = new URL(raw, window.location.href);
-          if (/openreview\.net$/i.test(parsed.hostname)) {
-            return `https://docs.google.com/gview?embedded=1&url=${encodeURIComponent(parsed.href)}`;
+          const hostname = parsed.hostname.toLowerCase();
+          const isOpenReviewHost =
+            hostname === 'openreview.net' ||
+            parsed.hostname.toLowerCase().endsWith('.openreview.net');
+          const normalizedPath = parsed.pathname.replace(/\/+$/, '') || '/';
+          if (isOpenReviewHost && normalizedPath === '/forum') {
+            const forumId = parsed.searchParams.get('id');
+            if (forumId) {
+              parsed.pathname = '/pdf';
+              parsed.search = '';
+              parsed.searchParams.set('id', forumId);
+              parsed.hash = '';
+            }
           }
           return parsed.href;
         } catch (_err) {
           return raw;
+        }
+      };
+
+      const isOpenReviewPdfUrl = (url) => {
+        const normalized = normalizePdfUrl(url);
+        if (!normalized) return false;
+        try {
+          const parsed = new URL(normalized, window.location.href);
+          const hostname = parsed.hostname.toLowerCase();
+          return hostname === 'openreview.net' || hostname.endsWith('.openreview.net');
+        } catch (_err) {
+          return false;
+        }
+      };
+
+      const buildPdfPreviewUrl = (url) => {
+        const normalizedUrl = normalizePdfUrl(url);
+        if (!normalizedUrl) return '';
+        try {
+          const parsed = new URL(normalizedUrl, window.location.href);
+          if (/mozilla\.github\.io$/i.test(parsed.hostname) && /\/pdf\.js\/web\/viewer\.html$/i.test(parsed.pathname)) {
+            return parsed.href;
+          }
+          if (isOpenReviewPdfUrl(normalizedUrl)) {
+            return normalizedUrl;
+          }
+          return `${PDFJS_VIEWER_URL}?file=${encodeURIComponent(parsed.href)}`;
+        } catch (_err) {
+          return normalizedUrl;
+        }
+      };
+
+      const loadPdfJs = () => {
+        if (window.pdfjsLib) {
+          window.pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(PDFJS_WORKER_URL, window.location.href).href;
+          return Promise.resolve(window.pdfjsLib);
+        }
+        if (pdfJsLoadPromise) return pdfJsLoadPromise;
+        pdfJsLoadPromise = new Promise((resolve, reject) => {
+          const script = document.createElement('script');
+          script.src = new URL(PDFJS_SCRIPT_URL, window.location.href).href;
+          script.async = true;
+          script.onload = () => {
+            if (!window.pdfjsLib) {
+              reject(new Error('PDF.js 加载失败'));
+              return;
+            }
+            window.pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(PDFJS_WORKER_URL, window.location.href).href;
+            resolve(window.pdfjsLib);
+          };
+          script.onerror = () => reject(new Error('PDF.js 加载失败'));
+          document.head.appendChild(script);
+        });
+        return pdfJsLoadPromise;
+      };
+
+      const setPdfPreviewMessage = (panel, text, tone) => {
+        const message = panel && panel.querySelector('.dpr-pdf-preview-message');
+        if (!message) return;
+        message.textContent = text || '';
+        message.classList.toggle('is-error', tone === 'error');
+        message.hidden = !text;
+      };
+
+      const renderPdfIntoPanel = async (panel, url) => {
+        const rawUrl = String(url || '').trim();
+        const pagesEl = panel && panel.querySelector('.dpr-pdf-preview-pages');
+        if (!panel || !pagesEl || !rawUrl) return;
+        if (panel.dataset.renderedPdfUrl === rawUrl && pagesEl.children.length) return;
+
+        const renderSeq = ++pdfPreviewRenderSeq;
+        panel.dataset.renderedPdfUrl = '';
+        pagesEl.innerHTML = '';
+        setPdfPreviewMessage(panel, '正在加载 PDF 预览…', '');
+
+        try {
+          const pdfjsLib = await loadPdfJs();
+          if (renderSeq !== pdfPreviewRenderSeq) return;
+          const loadingTask = pdfjsLib.getDocument({ url: rawUrl });
+          const pdf = await loadingTask.promise;
+          if (renderSeq !== pdfPreviewRenderSeq) return;
+          setPdfPreviewMessage(panel, '', '');
+
+          for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+            if (renderSeq !== pdfPreviewRenderSeq) return;
+            const page = await pdf.getPage(pageNumber);
+            if (renderSeq !== pdfPreviewRenderSeq) return;
+            const baseViewport = page.getViewport({ scale: 1 });
+            const stageWidth = Math.max(320, pagesEl.clientWidth || panel.clientWidth - 36 || 640);
+            const { scale, outputScale } = resolvePdfCanvasMetrics(
+              baseViewport.width,
+              baseViewport.height,
+              stageWidth,
+              window.devicePixelRatio,
+              pdf.numPages,
+            );
+            const viewport = page.getViewport({ scale });
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            canvas.width = Math.ceil(viewport.width * outputScale);
+            canvas.height = Math.ceil(viewport.height * outputScale);
+            canvas.style.width = `${viewport.width}px`;
+            canvas.style.height = `${viewport.height}px`;
+
+            const pageWrap = document.createElement('div');
+            pageWrap.className = 'dpr-pdf-preview-page';
+            pageWrap.setAttribute('data-page', String(pageNumber));
+            const pageLabel = document.createElement('div');
+            pageLabel.className = 'dpr-pdf-preview-page-label';
+            pageLabel.textContent = `${pageNumber} / ${pdf.numPages}`;
+            pageWrap.appendChild(pageLabel);
+            pageWrap.appendChild(canvas);
+            pagesEl.appendChild(pageWrap);
+
+            await page.render({
+              canvasContext: ctx,
+              viewport,
+              transform: [outputScale, 0, 0, outputScale, 0, 0],
+            }).promise;
+          }
+          panel.dataset.renderedPdfUrl = rawUrl;
+        } catch (err) {
+          if (renderSeq !== pdfPreviewRenderSeq) return;
+          pagesEl.innerHTML = '';
+          setPdfPreviewMessage(panel, 'PDF 预览加载失败，可以尝试新窗口预览或下载 PDF。', 'error');
+          console.warn('[DPR] PDF preview failed:', err);
         }
       };
 
@@ -2823,11 +3270,14 @@ window.$docsify = {
           '<div class="dpr-pdf-preview-header">',
           '<div class="dpr-pdf-preview-title">PDF 预览</div>',
           '<div class="dpr-pdf-preview-actions">',
-          '<a class="dpr-pdf-preview-open-link" href="#" target="_blank" rel="noopener">新窗口打开</a>',
+          '<a class="dpr-pdf-preview-open-link" href="#" target="_blank" rel="noopener">新窗口预览</a>',
           '<button class="dpr-pdf-preview-close" type="button" aria-label="关闭 PDF 预览">×</button>',
           '</div>',
           '</div>',
-          '<iframe class="dpr-pdf-preview-frame" title="PDF 预览"></iframe>',
+          '<div class="dpr-pdf-preview-stage">',
+          '<div class="dpr-pdf-preview-message" hidden></div>',
+          '<div class="dpr-pdf-preview-pages" aria-live="polite"></div>',
+          '</div>',
         ].join('');
         document.body.appendChild(panel);
         panel.querySelector('.dpr-pdf-preview-close')?.addEventListener('click', closePdfPreview);
@@ -2839,22 +3289,34 @@ window.$docsify = {
           if (btn.dataset.bound === '1') return;
           btn.dataset.bound = '1';
           btn.addEventListener('click', () => {
-            const url = String(btn.getAttribute('data-pdf-url') || '').trim();
+            const url = normalizePdfUrl(btn.getAttribute('data-pdf-url'));
             if (!url) return;
+            const previewUrl = buildPdfPreviewUrl(url);
+            if (isOpenReviewPdfUrl(previewUrl)) {
+              closePdfPreview();
+              window.open(previewUrl, '_blank', 'noopener,noreferrer');
+              return;
+            }
             const panel = ensurePdfPreviewPanel();
-            const frame = panel.querySelector('.dpr-pdf-preview-frame');
             const openLink = panel.querySelector('.dpr-pdf-preview-open-link');
-            const previewUrl = buildEmbeddablePdfUrl(url);
-            if (frame && frame.getAttribute('src') !== previewUrl) {
-              frame.setAttribute('src', previewUrl);
-            }
             if (openLink) {
-              openLink.setAttribute('href', url);
+              openLink.setAttribute('href', previewUrl);
             }
-            const nextOpen = !document.body.classList.contains('dpr-pdf-preview-open');
-            document.body.classList.toggle('dpr-pdf-preview-open', nextOpen);
-            btn.setAttribute('aria-expanded', nextOpen ? 'true' : 'false');
-            btn.textContent = nextOpen ? '关闭预览' : '预览 PDF';
+            const isOpen = document.body.classList.contains('dpr-pdf-preview-open');
+            const isSamePdf = panel.dataset.currentPdfUrl === url;
+            const nextOpen = !(isOpen && isSamePdf);
+            if (!nextOpen) {
+              closePdfPreview();
+              return;
+            }
+            panel.dataset.currentPdfUrl = url;
+            document.body.classList.add('dpr-pdf-preview-open');
+            document.querySelectorAll('[data-pdf-preview-toggle]').forEach((item) => {
+              const active = item === btn;
+              item.setAttribute('aria-expanded', active ? 'true' : 'false');
+              item.textContent = active ? '关闭预览' : '预览 PDF';
+            });
+            renderPdfIntoPanel(panel, url);
           });
         });
       };
@@ -2863,14 +3325,23 @@ window.$docsify = {
       const renderPaperFromMeta = (meta) => {
         if (!meta) return '';
 
-        // 解析标签，生成带颜色的 HTML
+        // 解析标签，生成带颜色的 HTML（大小写不敏感去重，兼容历史重复标签）
         const renderTags = (tags) => {
           if (!tags || !tags.length) return '';
-          return tags.map(tag => {
-            const [kind, label] = tag.includes(':') ? tag.split(':', 2) : ['other', tag];
+          const seen = new Set();
+          return tags.reduce((acc, tag) => {
+            const raw = String(tag || '').trim();
+            if (!raw) return acc;
+            const [kind, label] = raw.includes(':') ? raw.split(':', 2) : ['other', raw];
+            const cleanLabel = String(label || '').trim();
+            if (!cleanLabel) return acc;
+            const dedupKey = cleanLabel.toLowerCase();
+            if (seen.has(dedupKey)) return acc;
+            seen.add(dedupKey);
             const css = { keyword: 'tag-green', query: 'tag-blue', paper: 'tag-pink' }[kind] || 'tag-pink';
-            return `<span class="tag-label ${css}">${escapeHtml(label)}</span>`;
-          }).join(' ');
+            acc.push(`<span class="tag-label ${css}">${escapeHtml(cleanLabel)}</span>`);
+            return acc;
+          }, []).join(' ');
         };
         const renderSourceChips = (source) => {
           const text = String(source || '').trim();
@@ -2931,8 +3402,11 @@ window.$docsify = {
         }
         lines.push(`<p><strong>Date</strong>: ${escapeHtml(meta.date || 'Unknown')}</p>`);
         if (meta.pdf) {
+          const safePdf = escapeHtml(meta.pdf);
           lines.push(
-            `<p class="paper-meta-link-row"><span class="paper-meta-link-label"><strong>PDF</strong>:</span> <a class="paper-meta-link" href="${escapeHtml(meta.pdf)}" target="_blank">${escapeHtml(meta.pdf)}</a></p>`
+            `<p class="paper-meta-link-row paper-meta-pdf-row"><span class="paper-meta-link-label"><strong>PDF</strong>:</span> ` +
+            `<button type="button" class="dpr-pdf-preview-toggle paper-meta-pdf-preview" data-pdf-preview-toggle data-pdf-url="${safePdf}" aria-expanded="false">预览 PDF</button>` +
+            `<a class="dpr-pdf-download-link" href="${safePdf}" target="_blank" rel="noopener" download>下载 PDF</a></p>`
           );
         }
         if (meta.tags && meta.tags.length) {
@@ -3141,6 +3615,7 @@ window.$docsify = {
 
         // 论文页标题条排版（只对 docs/YYYYMM/DD/*.md 生效）
         applyPaperTitleBar();
+        enhanceDailyReportLayout({ isHomePage, isReportPage });
         bindPdfPreviewToggle();
 
         // 论文页左右切换：更新导航列表并绑定事件（只绑定一次）

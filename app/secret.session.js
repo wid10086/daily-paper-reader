@@ -37,19 +37,37 @@
 
   async function fetchStaticSecretPayload() {
     const url = getStaticSecretFileUrl();
-    try {
-      const resp = await fetch(url, {
-        method: 'GET',
-        cache: 'no-store',
-      });
-      if (!resp || !resp.ok) {
-        throw new Error(`HTTP ${resp ? resp.status : 0} ${url}`);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000);
+      try {
+        const resp = await fetch(url, {
+          method: 'GET',
+          cache: 'no-store',
+          signal: controller.signal,
+        });
+        // 部署切换期间的瞬时 404 也重试一次；其它错误不能当作文件不存在。
+        if (resp && resp.status === 404) {
+          if (attempt === 0) continue;
+          return null;
+        }
+        if (!resp || !resp.ok) {
+          throw new Error(`HTTP ${resp ? resp.status : 0}`);
+        }
+        const payload = await resp.json();
+        if (!payload || !['salt', 'iv', 'ciphertext'].every(key => typeof payload[key] === 'string' && payload[key])) {
+          throw new Error('密钥文件格式无效，请检查部署或稍后重试。');
+        }
+        return payload;
+      } catch (e) {
+        if (attempt === 1) {
+          if (controller.signal.aborted) throw new Error('读取密钥配置超时，请重试。');
+          throw e;
+        }
+      } finally {
+        clearTimeout(timeout);
       }
-      return await resp.json();
-    } catch (e) {
-      console.warn('[SECRET] 未能读取静态 secret.private：', e);
     }
-    return null;
   }
 
   const getLocalApiUrl = (path) => {
@@ -325,15 +343,6 @@
       note: '默认推荐；使用 zwwen.online 公益 rerank 服务。',
     },
     {
-      value: 'local-qwen3-0.6b',
-      label: '本地 Qwen3-Reranker-0.6B',
-      provider: 'local',
-      model: 'Qwen/Qwen3-Reranker-0.6B',
-      baseUrl: '',
-      requiresApiKey: false,
-      note: '无需 reranker API Key，GitHub Actions 在 CPU 上加载本地模型。',
-    },
-    {
       value: 'siliconflow-qwen3-0.6b',
       label: '硅基流动 Qwen3-Reranker-0.6B',
       provider: 'siliconflow',
@@ -362,12 +371,13 @@
       reranker.profile ||
       '';
     const profile = findRerankerProfile(inferredProfile);
+    const wasLocal = provider === 'local' || inferredProfile === 'local-qwen3-0.6b';
     return {
       profile: profile.value,
-      provider: provider || profile.provider,
-      model: model || profile.model,
-      apiKey: normalizeText(reranker.apiKey || ''),
-      baseUrl: normalizeBaseUrlForStorage(reranker.baseUrl || profile.baseUrl || ''),
+      provider: wasLocal ? profile.provider : (provider || profile.provider),
+      model: wasLocal ? profile.model : (model || profile.model),
+      apiKey: wasLocal ? '' : normalizeText(reranker.apiKey || ''),
+      baseUrl: normalizeBaseUrlForStorage(wasLocal ? profile.baseUrl : (reranker.baseUrl || profile.baseUrl || '')),
     };
   };
   const buildConnectivityTestPayload = (baseUrl, model) => {
@@ -486,6 +496,11 @@
         }
         results.push(model);
       }
+    } catch (e) {
+      if (controller.signal.aborted) {
+        throw new Error('DeepSeek 连接测试超时，请稍后重试');
+      }
+      throw e;
     } finally {
       clearTimeout(timeout);
     }
@@ -2013,6 +2028,34 @@
     }
   }
 
+  function showSecretLoadError(error, retry) {
+    const overlay = document.getElementById('secret-gate-overlay');
+    const modal = document.getElementById('secret-gate-modal');
+    if (!overlay || !modal) return;
+    setAccessMode('locked');
+    modal.classList.remove('secret-gate-modal-step2');
+    modal.innerHTML = `
+      <h2>暂时无法读取密钥配置</h2>
+      <p>请检查网络或等待站点部署完成后重试。原有配置尚未确认，不会进入初始化。</p>
+      <p id="secret-load-error-detail" style="font-size:13px; color:#c00;"></p>
+      <div class="secret-gate-actions">
+        <button id="secret-load-retry" type="button" class="secret-gate-btn">重新读取</button>
+        <button id="secret-load-guest" type="button" class="secret-gate-btn secondary">以游客身份访问</button>
+      </div>`;
+    document.getElementById('secret-load-error-detail').textContent = error.message || String(error);
+    document.getElementById('secret-load-retry').addEventListener('click', (event) => {
+      event.currentTarget.disabled = true;
+      event.currentTarget.textContent = '正在重试…';
+      retry();
+    });
+    document.getElementById('secret-load-guest').addEventListener('click', () => {
+      setAccessMode('guest');
+      closeSecretOverlay(overlay);
+    });
+    window.DPRSecretSetup.openStep2 = () => showSecretLoadError(error, retry);
+    openSecretOverlay(overlay);
+  }
+
   function init() {
     const overlay = document.getElementById('secret-gate-overlay');
     const registerGuestOnlySecretSetup = () => {
@@ -2037,12 +2080,9 @@
     try {
       window.DPRSecretSetup = window.DPRSecretSetup || {};
       const earlyOpenStep2 = function () {
-        setupOverlay(true);
+        const modal = document.getElementById('secret-gate-modal');
+        if (modal) modal.textContent = '正在读取密钥配置，请稍候…';
         openSecretOverlay(overlay);
-        const formalOpenStep2 = window.DPRSecretSetup && window.DPRSecretSetup.openStep2;
-        if (typeof formalOpenStep2 === 'function' && formalOpenStep2 !== earlyOpenStep2) {
-          formalOpenStep2();
-        }
       };
       window.DPRSecretSetup.openStep2 = earlyOpenStep2;
     } catch {
@@ -2050,7 +2090,7 @@
     }
 
     // 检查是否已经存在 secret.private（用于区分“解锁”与“初始化”）
-    (async () => {
+    const loadSecret = async () => {
       try {
         const staticPayload = await fetchStaticSecretPayload();
         let hasSecret = Boolean(staticPayload);
@@ -2102,13 +2142,12 @@
           setupOverlay(false);
           openSecretOverlay(overlay);
         }
-      } catch {
-        // 请求失败时按“文件不存在”处理：始终进入初始化向导
-        window.DPR_ACCESS_MODE = 'locked';
-        setupOverlay(false);
-        openSecretOverlay(overlay);
+      } catch (error) {
+        // 保留已保存密码；读取失败只提供重试/游客入口，不能误初始化或覆盖配置。
+        showSecretLoadError(error, loadSecret);
       }
-    })();
+    };
+    loadSecret();
   }
 
   if (document.readyState === 'loading') {

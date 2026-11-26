@@ -33,10 +33,16 @@ window.SubscriptionsManager = (function () {
   const selectedConferenceYearPairs = new Set();
   let resetContentBtn = null;
   let resetContentMsgEl = null;
+  let resetContentPending = false;
   let adminDailyTabBtn = null;
   let adminConferenceTabBtn = null;
   let adminDailyPanel = null;
   let adminConferencePanel = null;
+  let adminTopicTabBtn = null;
+  let adminTopicPanel = null;
+  let topicProfilePickerEl = null;
+  let topicSelectedTag = '';
+  let topicSelectionInitialized = false;
   let activeAdminPanelTab = 'daily';
 
   let draftConfig = null;
@@ -111,11 +117,22 @@ window.SubscriptionsManager = (function () {
     'NDSS',
   ];
   const CONFERENCE_STATS_SNAPSHOT_URL = 'app/conference-stats.json';
-  // 2026 年会议数据可用性（截至 2026-07）：
-  // 有数据: ICLR 2026, ICML 2026, AAAI 2026, ACL 2026, OSDI 2026, IEEE S&P 2026, NDSS 2026
-  // 无数据: CVPR/SOSP 2026（论文 PDF 尚未全量公开或未上传）
-  const CONFERENCE_2026_AVAILABLE = new Set(['ICLR', 'ICML', 'AAAI', 'ACL', 'OSDI', 'IEEE S&P', 'NDSS']);
-  const FEATURED_CONFERENCE_YEAR_PAIRS = new Set(['acl:2026', 'icml:2026']);
+  // 已入库并验证检索的 2026 年会议。
+  const CONFERENCE_2026_AVAILABLE = new Set(['ICLR', 'ICML', 'NEURIPS', 'NIPS', 'AAAI', 'ACL', 'CVPR', 'ECCV', 'IJCAI', 'OSDI', 'SOSP', 'IEEE S&P', 'NDSS']);
+  const CONFERENCE_DATA_NOTICES = {
+    'NeurIPS:2026': 'NeurIPS 2026 当前支持官方主会论文的标题与摘要检索，PDF 下载可用性尚待确认。',
+  };
+  const FEATURED_CONFERENCE_YEAR_PAIRS = new Set([
+    'acl:2026',
+    'icml:2026',
+    'cvpr:2026',
+    'osdi:2026',
+    'ieee_sp:2026',
+    'eccv:2026',
+    'ijcai:2026',
+    'sosp:2026',
+    'neurips:2026',
+  ]);
   // ECCV 是双年会议（偶数年）
   const BIENNIAL_EVEN_CONFERENCES = new Set(['ECCV']);
   const CONFERENCES_WITH_PENDING_CURRENT_YEAR = new Set([
@@ -263,6 +280,7 @@ window.SubscriptionsManager = (function () {
         .map((year) => {
           const active = selectedConferenceYearPairs.has(`${name}:${year}`);
           const reason = getConferenceYearDisabledReason(name, year);
+          const dataNotice = CONFERENCE_DATA_NOTICES[`${name}:${year}`] || '';
           const disabled = !!reason;
           const stats = getConferenceYearStats(name, year);
           const classes = [
@@ -286,8 +304,9 @@ window.SubscriptionsManager = (function () {
             data-conference="${escapeHtml(name)}"
             data-conference-year="${escapeHtml(year)}"
             aria-pressed="${active ? 'true' : 'false'}"
-            aria-label="${escapeHtml(`${name} ${visibleLabel}`)}"
-            ${disabled ? `disabled title="${escapeHtml(reason)}"` : ''}
+            aria-label="${escapeHtml(`${name} ${visibleLabel}${dataNotice ? `；${dataNotice}` : ''}`)}"
+            ${disabled ? 'disabled' : ''}
+            ${reason || dataNotice ? `title="${escapeHtml(reason || dataNotice)}"` : ''}
           ><span class="dpr-choice-pill-main">${labelHtml}</span>${featureStar}</button>`;
         })
         .join('');
@@ -688,20 +707,15 @@ window.SubscriptionsManager = (function () {
     if (BIENNIAL_EVEN_CONFERENCES.has(conf) && yearNum % 2 !== 0) {
       return `${conf} 为双年会议，仅偶数年举办（如 2024、2026）`;
     }
+    if (yearNum === 2026 && CONFERENCE_2026_AVAILABLE.has(conf)) return '';
     // 2026 年可用性
     const currentYear = new Date().getFullYear();
     if (yearNum >= currentYear && !CONFERENCE_2026_AVAILABLE.has(conf)) {
       const ESTIMATED_DATES = {
-        CVPR:    '2026 年 7 月（论文上传后）',
         ICML:    '2026 年 7 月会后',
-        IJCAI:   '2026 年 8 月会后',
         ACL:     '2026 年 7 月会后',
-        EMNLP:   '2026 年 11 月会后',
-        NEURIPS: '2026 年 12 月会后',
-        NIPS:    '2026 年 12 月会后',
-        ECCV:    '2026 年秋季会后',
+        EMNLP:   '2026 年 10 月中下旬（以官方论文集开放时间为准）',
         OSDI:    '2026 年会后论文 PDF 公开后',
-        SOSP:    '2026 年会后论文 PDF 公开后',
         'IEEE S&P': '2026 年 CSDL 论文 PDF 公开后',
       };
       const est = ESTIMATED_DATES[conf];
@@ -715,8 +729,6 @@ window.SubscriptionsManager = (function () {
     ) {
       const PENDING_DATES = {
         ICML:    '预计 2026 年 7 月会后纳入',
-        NEURIPS: '预计 2026 年 12 月会后纳入',
-        NIPS:    '预计 2026 年 12 月会后纳入',
       };
       return PENDING_DATES[conf] || `${yearNum} 年论文尚未公开`;
     }
@@ -770,7 +782,7 @@ window.SubscriptionsManager = (function () {
       return;
     }
     targetEl.innerHTML = filtered.map((profile) => {
-      const selected = !!profile.selected;
+      const selected = mode === 'topic' ? normalizeText(profile.tag) === topicSelectedTag : !!profile.selected;
       const tag = normalizeText(profile.tag);
       const desc = normalizeText(profile.description);
       const shortDesc = truncateDisplayText(desc, 10);
@@ -791,6 +803,28 @@ window.SubscriptionsManager = (function () {
   const renderProfilePickers = () => {
     renderProfilePicker(dailyProfilePickerEl, 'daily');
     renderProfilePicker(conferenceProfilePickerEl, 'conference');
+    renderProfilePicker(topicProfilePickerEl, 'topic');
+  };
+  const initializeTopicSelection = () => {
+    if (topicSelectionInitialized) return;
+    const selected = getSelectedProfilesForRun();
+    topicSelectedTag = selected.length === 1 ? normalizeText(selected[0].tag) : '';
+    topicSelectionInitialized = true;
+    renderProfilePicker(topicProfilePickerEl, 'topic');
+  };
+  const setTopicProfileSelection = profileId => {
+    const profile = getProfilesForRun().find(item => String(item.id) === String(profileId));
+    if (!profile) return;
+    topicSelectedTag = normalizeText(profile.tag);
+    topicSelectionInitialized = true;
+    renderProfilePicker(topicProfilePickerEl, 'topic');
+  };
+  const getTopicResearchProfiles = () => {
+    const bridge = window.SubscriptionsSmartQuery;
+    const profiles = bridge && typeof bridge.getResearchProfiles === 'function'
+      ? bridge.getResearchProfiles()
+      : ((draftConfig && draftConfig.subscriptions && draftConfig.subscriptions.intent_profiles) || []);
+    return profiles.filter(profile => topicSelectedTag && normalizeText(profile.tag) === topicSelectedTag).map(cloneDeep);
   };
   const setProfileSelection = (profileId, selected) => {
     if (!window.SubscriptionsSmartQuery || typeof window.SubscriptionsSmartQuery.setProfileSelection !== 'function') {
@@ -838,7 +872,7 @@ window.SubscriptionsManager = (function () {
     if (!window.SubscriptionsSmartQuery || typeof window.SubscriptionsSmartQuery.setRunSelectionMode !== 'function') {
       return;
     }
-    window.SubscriptionsSmartQuery.setRunSelectionMode(activeAdminPanelTab, () => {
+    window.SubscriptionsSmartQuery.setRunSelectionMode(activeAdminPanelTab === 'topic' ? 'daily' : activeAdminPanelTab, () => {
       refreshQuickRunButtons();
     });
   };
@@ -913,6 +947,10 @@ window.SubscriptionsManager = (function () {
         conferenceHintEl.textContent = `先勾选词条（最多 2 个），再勾选会议年份（库内总数 < ${formatCount(MAX_CONFERENCE_STORED_TOTAL)} 篇）。每组约 5 分钟 / ¥0.2`;
         conferenceHintEl.style.color = '';
       }
+      // 元数据可检索不代表全文可读；复用现有说明区，移动端选择后也能看到。
+      const dataNotices = Array.from(selectedConferenceYearPairs)
+        .map((pair) => CONFERENCE_DATA_NOTICES[pair]).filter(Boolean);
+      if (dataNotices.length) conferenceHintEl.textContent += ` ${dataNotices.join(' ')}`;
     }
     if (hasUnsavedChanges && quickRunMsgEl) {
       quickRunMsgEl.textContent = '有未保存修改，请先保存。';
@@ -954,10 +992,11 @@ window.SubscriptionsManager = (function () {
   };
 
   const syncAdminPanelTabs = () => {
-    const active = activeAdminPanelTab === 'conference' ? 'conference' : 'daily';
+    const active = ['conference', 'topic'].includes(activeAdminPanelTab) ? activeAdminPanelTab : 'daily';
     [
       [adminDailyTabBtn, active === 'daily'],
       [adminConferenceTabBtn, active === 'conference'],
+      [adminTopicTabBtn, active === 'topic'],
     ].forEach(([btn, isActive]) => {
       if (!btn) return;
       btn.classList.toggle('is-active', !!isActive);
@@ -970,13 +1009,16 @@ window.SubscriptionsManager = (function () {
     if (adminConferencePanel) {
       adminConferencePanel.hidden = active !== 'conference';
     }
+    if (adminTopicPanel) adminTopicPanel.hidden = active !== 'topic';
     if (panel) {
       panel.classList.toggle('is-conference-tab', active === 'conference');
+      panel.classList.toggle('is-topic-tab', active === 'topic');
     }
   };
 
   const switchAdminPanelTab = (tab) => {
-    const nextTab = tab === 'conference' ? 'conference' : 'daily';
+    const nextTab = ['conference', 'topic'].includes(tab) ? tab : 'daily';
+    if (nextTab === 'topic') initializeTopicSelection();
     if (activeAdminPanelTab === nextTab) {
       syncAdminPanelTabs();
       return;
@@ -1039,8 +1081,8 @@ window.SubscriptionsManager = (function () {
     };
     const fetchMode = normalizeText(options.fetchMode).toLowerCase();
     const modeText = fetchMode === 'standard'
-      ? '30 天标准抓取任务'
-      : (fetchMode === 'skims' ? '30 天速览抓取任务' : `${days} 天抓取任务`);
+      ? `${days} 天标准抓取任务`
+      : (Number(days) > 30 ? `${days} 天 arXiv 专题回溯任务` : (fetchMode === 'skims' ? `${days} 天速览抓取任务` : `${days} 天抓取任务`));
     const tip = `已发起词条「${normalizedTag}」的${modeText}。`;
     return runQuickFetch(days, quickRunMsgEl || msgEl, tip, options);
   };
@@ -1054,8 +1096,8 @@ window.SubscriptionsManager = (function () {
     }
     const fetchMode = normalizeText(runOptions.fetchMode).toLowerCase();
     const modeText = fetchMode === 'standard'
-      ? '30 天全标准 / 精读'
-      : (fetchMode === 'skims' ? '30 天全速览' : `${days} 天`);
+      ? `${days} 天全标准 / 精读`
+      : (Number(days) > 30 ? `${days} 天 arXiv 专题回溯` : (fetchMode === 'skims' ? `${days} 天全速览` : `${days} 天`));
     const options = runOptions && typeof runOptions === 'object' ? cloneDeep(runOptions) : {};
     const dispatchInputs = isPlainObject(options.dispatchInputs) ? options.dispatchInputs : {};
     options.dispatchInputs = {
@@ -1068,6 +1110,10 @@ window.SubscriptionsManager = (function () {
     return success;
   };
   const runSelectedQuickFetchByMode = () => {
+    if (quickRunMode === '90' || quickRunMode === '365') {
+      if (!window.confirm('将对所选词条进行 arXiv 长周期回溯，只检索 arXiv。全部候选需调用 DeepSeek 评审，宽泛专题可能有上万篇，耗时和费用按实际量增长；不下载全量PDF。确认开始？')) return false;
+      return runSelectedQuickFetch(Number(quickRunMode), { fetchMode: 'skims' });
+    }
     if (quickRunMode === '30-skims') {
       return runSelectedQuickFetch(30, { fetchMode: 'skims' });
     }
@@ -1144,7 +1190,8 @@ window.SubscriptionsManager = (function () {
     return true;
   };
 
-  const runResetContent = (msgEl) => {
+  const runResetContent = async (msgEl) => {
+    if (resetContentPending) return;
     if (String(window.DPR_ACCESS_MODE || '') !== 'full') {
       if (msgEl) {
         msgEl.textContent = '未检测到完整登录权限，危险操作未开启。';
@@ -1172,10 +1219,34 @@ window.SubscriptionsManager = (function () {
       return;
     }
 
-    window.DPRWorkflowRunner.runWorkflowByKey('reset-content');
+    resetContentPending = true;
+    if (resetContentBtn) resetContentBtn.disabled = true;
+    const warnBeforeDispatch = (event) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warnBeforeDispatch);
     if (msgEl) {
-      msgEl.textContent = '已发起论文内容重置任务。';
-      msgEl.style.color = '#080';
+      msgEl.textContent = '正在提交论文内容重置任务，请勿关闭页面…';
+      msgEl.style.color = '#666';
+    }
+    try {
+      const accepted = await window.DPRWorkflowRunner.runWorkflowByKey('reset-content');
+      if (msgEl) {
+        msgEl.textContent = accepted === true
+          ? '论文内容重置任务已提交，请在工作流面板查看进度。'
+          : '重置任务提交未获确认，请在工作流面板检查状态。';
+        msgEl.style.color = accepted === true ? '#080' : '#c00';
+      }
+    } catch (error) {
+      if (msgEl) {
+        msgEl.textContent = `重置任务提交失败：${error.message || error}`;
+        msgEl.style.color = '#c00';
+      }
+    } finally {
+      resetContentPending = false;
+      if (resetContentBtn) resetContentBtn.disabled = false;
+      window.removeEventListener('beforeunload', warnBeforeDispatch);
     }
   };
 
@@ -1389,6 +1460,7 @@ window.SubscriptionsManager = (function () {
               >
                 会议论文
               </button>
+              <button id="dpr-admin-tab-topic" class="dpr-admin-tab" type="button" role="tab" aria-selected="false" aria-controls="arxiv-topic-control-side">专题研究</button>
             </div>
           </div>
           <div style="display:flex; gap:8px; align-items:center;">
@@ -1403,11 +1475,16 @@ window.SubscriptionsManager = (function () {
             <div id="dpr-smart-query-section" class="arxiv-pane dpr-smart-pane">
               <div class="dpr-display-card">
                 <div id="dpr-sq-display" class="dpr-sq-display"></div>
-                <div class="dpr-input-card">
-                  <div class="dpr-inline-row">
-                    <button id="dpr-sq-open-chat-btn" class="arxiv-tool-btn" style="background:#2e7d32; color:#fff;">新增</button>
-                  </div>
-                </div>
+              </div>
+              <div class="dpr-admin-add-row">
+                <button id="dpr-sq-open-chat-btn" class="arxiv-tool-btn dpr-admin-add-btn" type="button">
+                  <span class="dpr-admin-add-icon" aria-hidden="true">
+                    <svg viewBox="0 0 12 12" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                      <path d="M6 2v8M2 6h8" />
+                    </svg>
+                  </span>
+                  <span>新增研究方向</span>
+                </button>
               </div>
             </div>
 
@@ -1423,15 +1500,17 @@ window.SubscriptionsManager = (function () {
             aria-labelledby="dpr-admin-tab-daily"
           >
             <div class="dpr-bulk-bar-head">
-              <div>
+              <div class="dpr-title-inline">
                 <div class="chat-quick-run-title">快速抓取</div>
                 <div id="arxiv-admin-quick-run-hint" class="dpr-task-hint">默认全选词条，快速抓取不区分日常状态。</div>
               </div>
-              <button id="arxiv-admin-open-workflow-panel-btn" class="arxiv-tool-btn dpr-task-workflow-btn" type="button">打开工作流</button>
-            </div>
-            <div class="dpr-task-picker-tools">
-              <button id="arxiv-admin-daily-select-all-btn" class="arxiv-tool-btn" type="button">全选</button>
-              <button id="arxiv-admin-daily-clear-all-btn" class="arxiv-tool-btn" type="button">取消全选</button>
+              <div class="dpr-bulk-bar-actions">
+                <div class="dpr-task-picker-tools">
+                  <button id="arxiv-admin-daily-select-all-btn" class="arxiv-tool-btn" type="button">全选</button>
+                  <button id="arxiv-admin-daily-clear-all-btn" class="arxiv-tool-btn" type="button">取消全选</button>
+                </div>
+                <button id="arxiv-admin-open-workflow-panel-btn" class="arxiv-tool-btn dpr-task-workflow-btn" type="button">打开工作流</button>
+              </div>
             </div>
             <div id="arxiv-admin-daily-profile-picker" class="dpr-profile-picker-row"></div>
             <div class="dpr-task-content-row">
@@ -1470,6 +1549,7 @@ window.SubscriptionsManager = (function () {
                 <div id="arxiv-admin-reset-content-msg" class="chat-quick-run-msg"></div>
               </div>
             </div>
+            <div class="dpr-topic-invitation"><span>想更深入了解一个研究方向？</span><button id="dpr-admin-go-topic" class="arxiv-tool-btn" type="button">前往专题研究</button></div>
           </div>
 
           <div
@@ -1481,18 +1561,18 @@ window.SubscriptionsManager = (function () {
           >
             <div class="dpr-conference-pane">
               <div class="dpr-bulk-bar-head">
-                <div>
-                  <div class="dpr-title-inline">
-                    <div class="chat-quick-run-title">会议论文检索</div>
-                    <div id="arxiv-admin-conference-hint" class="dpr-conference-note">默认全选词条。</div>
+                <div class="dpr-title-inline">
+                  <div class="chat-quick-run-title">会议论文检索</div>
+                  <div id="arxiv-admin-conference-hint" class="dpr-conference-note">默认全选词条。</div>
+                </div>
+                <div class="dpr-bulk-bar-actions">
+                  <div class="dpr-task-picker-tools">
+                    <button id="arxiv-admin-conference-select-all-btn" class="arxiv-tool-btn" type="button">全选</button>
+                    <button id="arxiv-admin-conference-clear-all-btn" class="arxiv-tool-btn" type="button">取消全选</button>
                   </div>
                 </div>
               </div>
 
-              <div class="dpr-task-picker-tools">
-                <button id="arxiv-admin-conference-select-all-btn" class="arxiv-tool-btn" type="button">全选</button>
-                <button id="arxiv-admin-conference-clear-all-btn" class="arxiv-tool-btn" type="button">取消全选</button>
-              </div>
               <div id="arxiv-admin-conference-profile-picker" class="dpr-profile-picker-row"></div>
 
               <div class="dpr-choice-field">
@@ -1511,6 +1591,9 @@ window.SubscriptionsManager = (function () {
               </div>
             </div>
           </div>
+          <div id="arxiv-topic-control-side" class="dpr-admin-task-panel" role="tabpanel" aria-labelledby="dpr-admin-tab-topic" hidden>
+            ${window.DPRTopicResearch ? window.DPRTopicResearch.render() : '<p class="dpr-task-hint">专题模块尚未加载，请刷新重试。</p>'}
+          </div>
         </div>
       </div>
     `;
@@ -1525,6 +1608,18 @@ window.SubscriptionsManager = (function () {
     adminConferenceTabBtn = document.getElementById('dpr-admin-tab-conference');
     adminDailyPanel = document.getElementById('arxiv-search-quick-run-side');
     adminConferencePanel = document.getElementById('arxiv-conference-control-side');
+    adminTopicTabBtn = document.getElementById('dpr-admin-tab-topic');
+    adminTopicPanel = document.getElementById('arxiv-topic-control-side');
+    topicProfilePickerEl = document.getElementById('arxiv-admin-topic-profile-picker');
+    if (adminTopicTabBtn) adminTopicTabBtn.addEventListener('click', () => switchAdminPanelTab('topic'));
+    const topicInvitation = document.getElementById('dpr-admin-go-topic');
+    if (topicInvitation) topicInvitation.addEventListener('click', () => switchAdminPanelTab('topic'));
+    if (window.DPRTopicResearch) window.DPRTopicResearch.mount(adminTopicPanel, {
+      getProfiles: getTopicResearchProfiles,
+      getConfig: () => cloneDeep(draftConfig || {}),
+      hasUnsaved: () => hasUnsavedChanges,
+      getConferences: () => getSelectedConferencePairSpecs().map(pair => pair.split(':')[0]),
+    });
 
     const reloadAll = () => {
       renderFromDraft();
@@ -1768,7 +1863,8 @@ window.SubscriptionsManager = (function () {
     [
       [dailyProfilePickerEl, 'daily'],
       [conferenceProfilePickerEl, 'conference'],
-    ].forEach(([picker]) => {
+      [topicProfilePickerEl, 'topic'],
+    ].forEach(([picker, mode]) => {
       if (!picker || picker._bound) return;
       picker._bound = true;
       picker.addEventListener('click', (event) => {
@@ -1777,6 +1873,7 @@ window.SubscriptionsManager = (function () {
           : null;
         if (!chip) return;
         const profileId = chip.getAttribute('data-profile-id') || '';
+        if (mode === 'topic') { setTopicProfileSelection(profileId); return; }
         const selected = chip.getAttribute('aria-pressed') !== 'true';
         setProfileSelection(profileId, selected);
       });
@@ -1902,6 +1999,13 @@ window.SubscriptionsManager = (function () {
     validateDraftConfig: () => validateIntentProfiles(draftConfig || {}),
     runProfileQuickFetch: (profileTag, days, runOptions) => runProfileQuickFetch(profileTag, days, runOptions),
     __test: {
+      initializeTopicSelection,
+      setTopicProfileSelection,
+      getTopicResearchProfiles,
+      __resetTopicSelection: () => { topicSelectedTag = ''; topicSelectionInitialized = false; },
+      __setTopicProfilePickerEl: el => { topicProfilePickerEl = el; },
+      __setQuickRunMode: (value) => { quickRunMode = value; },
+      runSelectedQuickFetchByMode,
       normalizeSubscriptions: (config) => normalizeSubscriptions(config),
       ensureSourceBackendsForProfiles: (config) => ensureSourceBackendsForProfiles(cloneDeep(config || {})),
       buildDefaultSourceBackend: (sourceKey, config) => buildDefaultSourceBackend(sourceKey, cloneDeep(config || {})),

@@ -372,13 +372,22 @@ def normalize_carryover_tag(tag: Any) -> str:
         return ""
     if ":" in text:
         prefix, suffix = text.split(":", 1)
-        if prefix in {"query", "keyword"} and suffix.strip():
+        if prefix.lower() in {"query", "keyword"} and suffix.strip():
             text = suffix.strip()
+    if text.lower().endswith(":composite"):
+        text = text[: -len(":composite")].strip()
     return text
 
 
 def resolve_carryover_tags(item: Dict[str, Any], fallback_tags: List[str] | None = None) -> List[str]:
     collected: List[str] = []
+
+    # 原始召回标签记录论文真正由哪些订阅词条命中。LLM 归属可能因组合需求
+    # 偏移，因此历史去重必须同时参考原始标签，不能只依赖模型输出。
+    for raw_tag in normalize_tags(item.get("tags")):
+        normalized = normalize_carryover_tag(raw_tag)
+        if normalized:
+            collected.append(normalized)
 
     matched_query_tag = normalize_carryover_tag(item.get("matched_query_tag"))
     if matched_query_tag:
@@ -492,6 +501,21 @@ def build_scored_papers(papers: List[Dict[str, Any]], llm_ranked: List[Dict[str,
         paper["llm_tldr_en"] = tldr_en
         paper["llm_tldr_cn"] = tldr_cn or tldr_en
         paper["llm_tldr"] = paper["llm_tldr_cn"]
+        title_zh = str(item.get("title_zh") or "").strip()
+        motivation_cn = str(item.get("motivation_cn") or "").strip()
+        method_cn = str(item.get("method_cn") or "").strip()
+        result_cn = str(item.get("result_cn") or "").strip()
+        conclusion_cn = str(item.get("conclusion_cn") or "").strip()
+        if title_zh:
+            paper["llm_title_zh"] = title_zh
+        if motivation_cn:
+            paper["llm_motivation_cn"] = motivation_cn
+        if method_cn:
+            paper["llm_method_cn"] = method_cn
+        if result_cn:
+            paper["llm_result_cn"] = result_cn
+        if conclusion_cn:
+            paper["llm_conclusion_cn"] = conclusion_cn
         tags = normalize_tags(item.get("tags"))
         matched_query_tag = str(item.get("matched_query_tag") or "").strip()
         if matched_query_tag and matched_query_tag not in tags:

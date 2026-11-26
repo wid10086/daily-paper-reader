@@ -1,4 +1,5 @@
 import importlib.util
+import html
 import json
 import pathlib
 import sys
@@ -38,6 +39,24 @@ class ConferenceSidebarTest(unittest.TestCase):
 
     def tearDown(self):
         self.mod.enrich_conference_paper_for_deep_read = self._original_enrich
+
+    def test_publication_contract_preserves_raw_date_without_claiming_day(self):
+        paper = {'id': 'one', 'title': 'A paper', 'published': '2025-01-01T00:00:00Z', 'source': 'TESTCONF-2025-Accepted'}
+        payload = json.loads(html.unescape(self.mod.build_sidebar_payload(paper, {}, 'TESTCONF', '2025')))
+        self.assertEqual(payload['published'], paper['published'])
+        self.assertEqual(payload['publication_date'], '2025')
+        self.assertEqual(payload['publication_date_precision'], 'year')
+        markdown = self.mod.build_conference_markdown(paper, {}, 'TESTCONF', '2025')
+        self.assertIn('date: 2025\n', markdown)
+        self.assertIn('publication_date_precision: year\n', markdown)
+        self.assertNotIn('date: 2025-01-01', markdown)
+
+    def test_publication_contract_passes_verified_date_to_sidebar_and_markdown(self):
+        paper = {'id': 'one', 'title': 'A paper', 'publication_date': '2025-10-06', 'publication_date_precision': 'day', 'publication_date_source': 'https://official.example/volume', 'publication_date_kind': 'proceedings'}
+        payload = json.loads(html.unescape(self.mod.build_sidebar_payload(paper, {}, 'ICML', '2025')))
+        self.assertEqual(payload['publication_date'], '2025-10-06')
+        self.assertEqual(payload['publication_date_kind'], 'proceedings')
+        self.assertIn('date: 2025-10-06\n', self.mod.build_conference_markdown(paper, {}, 'ICML', '2025'))
 
     def write_result(self, path: pathlib.Path, title: str = "A Conference Paper") -> None:
         payload = {
@@ -142,6 +161,59 @@ class ConferenceSidebarTest(unittest.TestCase):
             self.assertIn("### 4. 来源与原文", md_text)
             self.assertNotIn("# A Conference Paper", md_text)
             self.assertNotIn("## 命中理由", md_text)
+
+    def test_long_conference_title_uses_safe_markdown_filename(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            sidebar = tmp_path / "_sidebar.md"
+            result = tmp_path / "conference-ieee-sp-ndss-aaai-acl-emnlp-icml-ijcai-neurips-2024-2026.supabase.llm.json"
+            long_slug = (
+                "sv-trusteval-c-evaluating-structure-and-semantic-reasoning-in-large-language-models-"
+                "for-source-code-vulnerability-analysis"
+            )
+            paper_id = f"ieee-sp-2025-{long_slug}"
+            title = (
+                "SV-TrustEval-C: Evaluating Structure and Semantic Reasoning in Large Language Models "
+                "for Source Code Vulnerability Analysis"
+            )
+            self.write_custom_result(result, paper_id, title, "query:security", "IEEE-SP-2025-Accepted")
+
+            conference, years = self.mod.parse_conference_result_name(result)
+            route = self.mod.build_conference_paper_route(
+                {"id": paper_id, "title": title},
+                conference,
+                years,
+            )
+            basename = route.rsplit("/", 1)[-1]
+            asset_key = self.mod.build_conference_asset_key({"id": paper_id, "title": title})
+            self.assertLessEqual(len(f"{basename}.md".encode("utf-8")), 255)
+            self.assertLessEqual(len(basename.encode("utf-8")), self.mod.CONFERENCE_DOC_BASENAME_MAX_BYTES)
+            self.assertRegex(basename, r"-[0-9a-f]{10}$")
+            self.assertLessEqual(len(asset_key.encode("utf-8")), self.mod.CONFERENCE_DOC_BASENAME_MAX_BYTES)
+            oversized_asset_key = self.mod.build_conference_asset_key({"id": f"{paper_id}-{long_slug}", "title": title})
+            self.assertLessEqual(len(oversized_asset_key.encode("utf-8")), self.mod.CONFERENCE_DOC_BASENAME_MAX_BYTES)
+            self.assertRegex(oversized_asset_key, r"-[0-9a-f]{10}$")
+
+            self.mod.update_sidebar_with_conference(sidebar, result, docs_dir=tmp_path / "docs", deep_min_score=-1)
+            text = sidebar.read_text(encoding="utf-8")
+
+            self.assertIn(title, text)
+            self.assertIn(f'href="#/{route}"', text)
+            paper_md = tmp_path / "docs" / f"{route}.md"
+            self.assertTrue(paper_md.exists())
+            self.assertLessEqual(len(paper_md.name.encode("utf-8")), 255)
+
+    def test_safe_existing_conference_route_keeps_legacy_basename(self):
+        paper = {
+            "id": "openreview-icml-2025-compatible-route",
+            "title": "This Title Is Long Enough To Test Compatibility But Still Fits The File System Limit",
+        }
+        old_basename = f"{self.mod.slugify(paper['id'])}-{self.mod.slugify(paper['title'])}"
+        self.assertLessEqual(len(f"{old_basename}.md".encode("utf-8")), self.mod.CONFERENCE_DOC_FILENAME_MAX_BYTES)
+
+        route = self.mod.build_conference_paper_route(paper, "ICML", "2025")
+
+        self.assertEqual(route, f"conference/icml-2025/{old_basename}")
 
     def test_update_sidebar_filters_score_three_and_keeps_four(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -37,12 +37,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
+      DPR_MODELS_REMOTE_ONLY: "1"
+      DPR_EMBED_ALLOW_LOCAL_FALLBACK: "0"
+      DPR_EMBED_API_URL: ${{ secrets.DPR_EMBED_API_URL || 'https://zwwen.online/embed' }}
+      DPR_EMBED_API_KEY: ${{ secrets.DPR_EMBED_API_KEY }}
+      DPR_EMBED_API_TIMEOUT: "60"
       SUPABASE_URL: https://lyucdwgefyfbmaiopjbk.supabase.co
       SUPABASE_SCHEMA: public
       SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
       SUPABASE_BACKEND_KEY: arxiv
       SUPABASE_PAPERS_TABLE: arxiv_papers
-      SUPABASE_RETENTION_DAYS: "45"
+      SUPABASE_RETENTION_DAYS: "400"
       OPENREVIEW_USERNAME: ${{ secrets.OPENREVIEW_USERNAME }}
       OPENREVIEW_PASSWORD: ${{ secrets.OPENREVIEW_PASSWORD }}
       DPR_ENABLE_NEURIPS_BACKEND: "1"
@@ -162,7 +167,7 @@ jobs:
               if [ -z "$FETCH_DAYS" ]; then
                 FETCH_DAYS="9"
               fi
-              ARGS=(--fetch-days "$FETCH_DAYS")
+              ARGS=(--fetch-days "$FETCH_DAYS" --retention-days "$SUPABASE_RETENTION_DAYS")
               python src/maintain/arxiv.py "${ARGS[@]}"
               ;;
             conference)
@@ -206,7 +211,7 @@ jobs:
                   python src/maintain/osdi.py --years "$YEARS" --skip-cleanup
                   ;;
                 sosp)
-                  python src/maintain/sosp.py --years "$YEARS" --skip-cleanup
+                  python src/maintain/sosp.py --years "$YEARS" --allow-missing-pdf --skip-cleanup
                   ;;
                 sp|s\&p|ieee_sp|ieee-sp|ieeesp|ieee_s\&p|ieee\ s\&p)
                   python src/maintain/ieee_sp.py --years "$YEARS" --skip-cleanup
