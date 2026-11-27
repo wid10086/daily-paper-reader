@@ -1,0 +1,17 @@
+{
+  "generated_at": "2026-11-27T05:04:06.850590+00:00",
+  "updated_date": "20261029-20261127",
+  "carryover_days": 9,
+  "tag_states": {
+    "d-deployment": {
+      "updated_date": "20261029-20261127",
+      "carryover_days": 9,
+      "items": []
+    },
+    "rsi": {
+      "updated_date": "20261029-20261127",
+      "carryover_days": 9,
+      "items": []
+    }
+  }
+}
