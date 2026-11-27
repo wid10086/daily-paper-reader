@@ -26,48 +26,45 @@ subscriptions:
     diff_threshold_pct: 15
   keyword_recall_mode: or
   intent_profiles:
-    - tag: d-optim
-      description: 三维空间组合优化与部署优化相关论文
+    - tag: d-layout-opt
+      description: 三维空间组合优化与部署优化的论文检索
       enabled: true
       paper_sources:
         - arxiv
         - biorxiv
       keywords:
-        - keyword: three dimensional optimization
-          keyword_cn: 三维优化
-          query: optimization algorithms in three dimensional space
-        - keyword: spatial combination optimization
-          keyword_cn: 空间组合优化
-          query: optimizing combinations in spatial layouts
-        - keyword: spatial layout planning
-          keyword_cn: 空间布局规划
-          query: planning spatial layouts for optimal arrangement
+        - keyword: three-dimensional layout optimization
+          keyword_cn: 三维布局优化
+          query: algorithms for optimizing spatial arrangement of objects in three-dimensional environments
+        - keyword: combinatorial optimization
+          keyword_cn: 组合优化
+          query: mathematical methods for solving complex arrangement and selection problems in discrete spaces
+        - keyword: spatial deployment planning
+          keyword_cn: 空间部署规划
+          query: strategic placement and allocation of resources or agents in physical 3D space
         - keyword: facility location problem
           keyword_cn: 设施选址问题
-          query: optimizing facility location in three dimensions
-        - keyword: spatial combinatorial search
-          keyword_cn: 空间组合搜索
-          query: combinatorial search methods for spatial data
-        - keyword: dimensional constraint satisfaction
-          keyword_cn: 维度约束满足
-          query: satisfying constraints in multi-dimensional spaces
+          query: optimizing the placement of facilities to minimize costs or maximize coverage in multidimensional settings
+        - keyword: geometric constraint solving
+          keyword_cn: 几何约束求解
+          query: satisfying spatial relationships and boundaries in 3D computational geometry contexts
+        - keyword: multi-objective optimization
+          keyword_cn: 多目标优化
+          query: balancing conflicting goals such as space usage and proximity in deployment scenarios
       intent_queries:
-        - query: Search for papers on optimal arrangement and deployment in 3D space
-          query_cn: 查找关于三维空间中最佳排列和部署的论文
+        - query: Recent advances in combinatorial optimization algorithms for three dimensional spatial deployment and layout
+          query_cn: 三维空间部署与布局组合优化算法的最新进展
           enabled: true
           source: manual
           note: ''
-        - query: Find studies on combinatorial optimization for spatial layout and packing
-          query_cn: 查找关于空间布局和装箱的组合优化研究
+        - query: >-
+            Methods for optimizing physical object arrangement and resource placement in complex three dimensional
+            environments
+          query_cn: 复杂三维环境中物理物体排列与资源放置的优化方法
           enabled: true
           source: manual
           note: ''
-        - query: Identify methods for optimizing physical placement in three dimensional environments
-          query_cn: 识别在三维环境中优化物理放置的方法
-          enabled: true
-          source: manual
-          note: ''
-      updated_at: '2026-11-27T03:15:13.613Z'
+      updated_at: '2026-11-27T03:16:29.664Z'
 source_backends:
   arxiv:
     papers_table: arxiv_papers
