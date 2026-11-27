@@ -65,6 +65,12 @@
     return out;
   };
 
+  const normalizePositiveInt = (value) => {
+    const num = Number(value);
+    if (!Number.isFinite(num) || num <= 0) return null;
+    return Math.floor(num);
+  };
+
   const resolveChatModels = (secret) => {
     const safeSecret = secret && typeof secret === 'object' ? secret : {};
     const chatList = Array.isArray(safeSecret.chatLLMs) ? safeSecret.chatLLMs : [];
@@ -76,6 +82,8 @@
       const apiKey = normalizeText(item.apiKey || '');
       const modelNames = sanitizeModelList(item.models || [], 99);
       if (!baseUrl || !apiKey || !modelNames.length) return;
+      const maxOutputTokens = normalizePositiveInt(item.max_output_tokens);
+      const contextWindow = normalizePositiveInt(item.context_window);
       modelNames.forEach((name) => {
         const dedupeKey = `${name.toLowerCase()}\u0000${baseUrl}\u0000${apiKey}`;
         if (seen.has(dedupeKey)) return;
@@ -84,6 +92,8 @@
           name,
           apiKey,
           baseUrl,
+          maxOutputTokens,
+          contextWindow,
         });
       });
     });
@@ -164,12 +174,18 @@
     return true;
   };
 
-  const buildStreamingChatPayload = ({ baseUrl, model, messages }) => {
+  const buildStreamingChatPayload = ({ baseUrl, model, messages, maxOutputTokens }) => {
     const payload = {
       model: normalizeText(model),
       messages: Array.isArray(messages) ? messages : [],
       stream: true,
     };
+    // 用户在设置页显式填写的最大输出 token 优先，其次才走 provider 默认特判。
+    const explicitMaxTokens = normalizePositiveInt(maxOutputTokens);
+    if (explicitMaxTokens) {
+      payload.max_tokens = explicitMaxTokens;
+      return payload;
+    }
     const maxTokens = resolveMaxOutputTokens({ baseUrl, model });
     if (maxTokens) {
       payload.max_tokens = maxTokens;

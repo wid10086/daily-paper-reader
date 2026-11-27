@@ -123,16 +123,21 @@ window.PrivateDiscussionChat = (function () {
     }
     return 'unsupported';
   };
-	  const buildStreamingChatPayload = (baseUrl, model, messages) => {
+	  const buildStreamingChatPayload = (baseUrl, model, messages, maxOutputTokens) => {
 	    const utils = window.DPRLLMConfigUtils || {};
 	    if (typeof utils.buildStreamingChatPayload === 'function') {
-	      return utils.buildStreamingChatPayload({ baseUrl, model, messages });
+	      return utils.buildStreamingChatPayload({ baseUrl, model, messages, maxOutputTokens });
 	    }
 	    const payload = {
 	      model,
 	      messages,
 	      stream: true,
 	    };
+	    const explicitMaxTokens = Number(maxOutputTokens);
+	    if (Number.isFinite(explicitMaxTokens) && explicitMaxTokens > 0) {
+	      payload.max_tokens = Math.floor(explicitMaxTokens);
+	      return payload;
+	    }
 	    const normalizedModel = String(model || '').trim().toLowerCase();
 	    const normalizedBaseUrl = String(baseUrl || '').trim().toLowerCase();
 	    if (
@@ -1232,7 +1237,12 @@ window.PrivateDiscussionChat = (function () {
       let resp = null;
 
       const baseUrl = (modelEntry && modelEntry.baseUrl ? modelEntry.baseUrl : '').trim();
-	      const primaryPayload = buildStreamingChatPayload(baseUrl, model, messages);
+	      const primaryPayload = buildStreamingChatPayload(
+	        baseUrl,
+	        model,
+	        messages,
+	        modelEntry && modelEntry.maxOutputTokens,
+	      );
 	      const fallbackPayload = {
 	        model,
 	        messages,

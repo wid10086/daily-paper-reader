@@ -9,8 +9,8 @@ import requests
 """
 统一的 LLM 客户端封装。
 
-提供商/模型命名规则：'provider/model'，provider 大小写不敏感，model 保留大小写与路径。
-当前运行链路仅支持 DeepSeek；本地 reranker 不走 LLM API。
+提供商/模型命名规则：'provider/model'，provider 大小写不敏感，model 保留大小写与路径；
+也接受纯模型名（走 OpenAI 兼容端点，需要 LLM_BASE_URL）。本地 reranker 不走 LLM API。
 """
 
 # 单次实验级别的全局 token 统计（需由调用方在实验开始前手动 reset）
@@ -784,12 +784,19 @@ def parse_provider_model(model_str: str) -> Tuple[str, str]:
     解析模型字符串为 (provider, model)。
 
     规则：第一个 '/' 之前为提供商（大小写不敏感），之后的全部为模型名（大小写敏感，允许包含 '/').
+    也接受不带 provider 前缀的纯模型名，此时 provider 返回空串。
     示例：
     - "deepseek/deepseek-v4-flash" -> ("deepseek", "deepseek-v4-flash")
+    - "gpt-4o-mini" -> ("", "gpt-4o-mini")
     """
-    if not isinstance(model_str, str) or '/' not in model_str:
-        raise ValueError("缺少模型提供商：请使用 'deepseek/model' 格式，例如 'deepseek/deepseek-v4-flash'")
-    provider, model = model_str.split('/', 1)
+    if not isinstance(model_str, str):
+        raise ValueError("模型名必须是字符串")
+    text = model_str.strip()
+    if not text:
+        raise ValueError("模型名不能为空")
+    if '/' not in text:
+        return '', text
+    provider, model = text.split('/', 1)
     return provider.lower(), model
 
 
@@ -800,23 +807,31 @@ class ClientFactory:
         基于环境变量创建具体客户端。
 
         必填：
-        - LLM_MODEL：形如 'provider/model'。
+        - LLM_MODEL：形如 'provider/model' 或纯模型名。
         选填：
         - LLM_API_KEY：通用 API key（优先级高于各 provider 专用 key）
-        - LLM_BASE_URL：通用 base_url（优先级高于默认 base_url）
+        - LLM_BASE_URL：通用 base_url（优先级高于默认 base_url；非 DeepSeek provider 必填）
         """
         model_env = (os.getenv('LLM_MODEL') or '').strip()
         if not model_env:
-            raise ValueError("缺少必要环境变量: LLM_MODEL（格式为 'deepseek/model'）")
+            raise ValueError("缺少必要环境变量: LLM_MODEL（格式为 'provider/model' 或纯模型名）")
 
         provider, model = parse_provider_model(model_env)
         api_key = (os.getenv('LLM_API_KEY') or '').strip() or None
         base_url = (os.getenv('LLM_BASE_URL') or '').strip() or None
 
-        if provider == 'deepseek':
+        if provider == 'deepseek' or (not provider and model.lower().startswith('deepseek')):
             base_url = base_url or DEFAULT_DEEPSEEK_BASE_URL
             return DeepSeekClient(api_key=api_key or os.getenv('DEEPSEEK_API_KEY', ''), model=model, base_url=base_url)
-        raise ValueError(f"当前仅支持 DeepSeek API，请使用 'deepseek/模型名'，当前 provider={provider}")
+        # 非 DeepSeek provider：统一走 OpenAI 兼容 chat/completions 协议，需要显式 base_url。
+        base_url = base_url or (os.getenv('SUMMARY_BASE_URL') or '').strip() or None
+        if not base_url:
+            raise ValueError(f"provider={provider or model} 需要配置 LLM_BASE_URL（任意 OpenAI 兼容端点）")
+        return LLMClient(
+            api_key=api_key or os.getenv('SUMMARY_API_KEY', ''),
+            model=model,
+            base_url=base_url,
+        )
 
     @staticmethod
     def from_config(_config: dict | None = None):
