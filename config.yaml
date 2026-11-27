@@ -25,3 +25,78 @@ subscriptions:
     stage: A
     diff_threshold_pct: 15
   keyword_recall_mode: or
+  intent_profiles:
+    - tag: d-deployment
+      description: 三维空间组合优化与部署策略检索
+      enabled: true
+      paper_sources:
+        - arxiv
+        - biorxiv
+      keywords:
+        - keyword: three-dimensional placement optimization
+          keyword_cn: 三维放置优化
+          query: mathematical and algorithmic methods for optimizing object placement in three-dimensional space
+        - keyword: spatial combinatorial optimization
+          keyword_cn: 空间组合优化
+          query: combinatorial optimization problems involving spatial constraints and geometry
+        - keyword: 3d deployment algorithms
+          keyword_cn: 三维部署算法
+          query: algorithmic approaches for deploying systems in three-dimensional environments
+        - keyword: geometric arrangement optimization
+          keyword_cn: 几何排列优化
+          query: optimizing the geometric arrangement of components in physical space
+        - keyword: 3d topology optimization
+          keyword_cn: 三维拓扑优化
+          query: optimizing structural topology in three-dimensional domains
+        - keyword: configuration optimization
+          keyword_cn: 配置优化
+          query: optimizing system configuration in spatial contexts
+      intent_queries:
+        - query: Search for papers on optimization algorithms for placing objects in 3D space
+          query_cn: 搜索关于三维空间中物体放置优化算法的论文
+          enabled: true
+          source: manual
+          note: ''
+        - query: Find research on combinatorial optimization for spatial deployment strategies
+          query_cn: 寻找空间部署策略组合优化研究
+          enabled: true
+          source: manual
+          note: ''
+        - query: Identify methods for solving 3D packing and arrangement problems
+          query_cn: 识别解决三维装箱和排列问题的方法
+          enabled: true
+          source: manual
+          note: ''
+        - query: Locate literature on geometric optimization for physical system deployment
+          query_cn: 定位物理系统部署的几何优化文献
+          enabled: true
+          source: manual
+          note: ''
+      updated_at: '2026-11-27T03:00:52.728Z'
+source_backends:
+  arxiv:
+    papers_table: arxiv_papers
+    use_vector_rpc: true
+    vector_rpc: match_arxiv_papers
+    vector_rpc_exact: match_arxiv_papers_exact
+    use_bm25_rpc: true
+    bm25_rpc: match_arxiv_papers_bm25
+    sync_table: arxiv_sync_status
+    sync_success_value: success
+    schema: public
+    kind: supabase
+    enabled: true
+    url: https://lyucdwgefyfbmaiopjbk.supabase.co
+    anon_key: sb_publishable_lX-oi64Uxyd7SIVv3_w2Uw_MTOojeKq
+  biorxiv:
+    papers_table: biorxiv_papers
+    use_vector_rpc: true
+    vector_rpc: match_biorxiv_papers_exact
+    vector_rpc_exact: match_biorxiv_papers_exact
+    use_bm25_rpc: true
+    bm25_rpc: match_biorxiv_papers_bm25
+    schema: public
+    kind: supabase
+    enabled: true
+    url: https://lyucdwgefyfbmaiopjbk.supabase.co
+    anon_key: sb_publishable_lX-oi64Uxyd7SIVv3_w2Uw_MTOojeKq
