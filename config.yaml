@@ -25,7 +25,56 @@ subscriptions:
     stage: A
     diff_threshold_pct: 15
   keyword_recall_mode: or
-  intent_profiles: []
+  intent_profiles:
+    - tag: d-deployment
+      description: 三维空间组合优化与部署优化
+      enabled: true
+      paper_sources:
+        - arxiv
+        - biorxiv
+      keywords:
+        - keyword: 3D spatial optimization
+          keyword_cn: 三维空间优化
+          query: algorithms and methods for optimizing spatial arrangements in three-dimensional environments
+        - keyword: combinatorial optimization
+          keyword_cn: 组合优化
+          query: mathematical techniques for solving optimization problems involving discrete variables and combinations
+        - keyword: deployment optimization
+          keyword_cn: 部署优化
+          query: strategies for optimal placement and allocation of resources or facilities in physical space
+        - keyword: facility location problem
+          keyword_cn: 设施选址问题
+          query: >-
+            mathematical models for determining the optimal locations of facilities to minimize costs or maximize
+            coverage
+        - keyword: multi-objective optimization
+          keyword_cn: 多目标优化
+          query: optimization frameworks that balance multiple conflicting objectives simultaneously
+        - keyword: heuristic algorithms
+          keyword_cn: 启发式算法
+          query: practical approximate methods used to solve complex optimization problems efficiently
+      intent_queries:
+        - query: Recent advances in 3D spatial combinatorial optimization for facility deployment and resource allocation
+          query_cn: 三维空间组合优化在设施部署和资源分配中的最新进展
+          enabled: true
+          source: manual
+          note: ''
+        - query: Mathematical models and heuristic algorithms for solving 3D packing and layout optimization problems
+          query_cn: 解决三维装箱和布局优化问题的数学模型与启发式算法
+          enabled: true
+          source: manual
+          note: ''
+        - query: Multi objective optimization techniques for complex spatial deployment scenarios with constraints
+          query_cn: 带约束的复杂空间部署场景中的多目标优化技术
+          enabled: true
+          source: manual
+          note: ''
+        - query: Applications of combinatorial optimization in three dimensional facility location and spatial planning
+          query_cn: 组合优化在三维设施选址和空间规划中的应用
+          enabled: true
+          source: manual
+          note: ''
+      updated_at: '2026-11-27T04:29:33.225Z'
 source_backends:
   arxiv:
     papers_table: arxiv_papers
